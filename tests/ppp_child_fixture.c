@@ -199,6 +199,39 @@ int main(int argc, char **argv) {
         if (raise(SIGUSR1)) return 96;
         return 96;
     }
+    /* pppd on a graceful signal ends with EXIT_USER_REQUEST (5). pppd-term is
+     * a pppd whose LCP Terminate-Request reaches its stdout: it sends one and
+     * waits up to 3 s for the Terminate-Ack (escaped code 06) on stdin.
+     * pppd-shunt models pppd 'notty': the same signal first kills the
+     * character shunt between pppd and stdin/stdout, so the Terminate-Request
+     * pppd then sends never reaches stdout; pppd gives up and exits. */
+    if (stopping && !strcmp(argv[1], "pppd-term")) {
+        static const unsigned char request[] = {0x7e, 0xff, 0x7d, 0x23, 0xc0, 0x21, 0x7d, 0x25, 0x7d, 0x22,
+                                                0x7d, 0x20, 0x7d, 0x24, 0x59, 0x28, 0x7e};
+        if (output(1, request, sizeof(request))) return 99;
+        uint64_t deadline = monotonic_ms() + 3000;
+        unsigned char previous = 0;
+        int acked = 0;
+        while (!acked && monotonic_ms() < deadline) {
+            struct pollfd fd = {0, POLLIN, 0};
+            int n = poll(&fd, 1, (int)(deadline - monotonic_ms()));
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break;
+            unsigned char data[256];
+            ssize_t got = read(0, data, sizeof(data));
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) break;
+            for (ssize_t i = 0; i < got; i++) {
+                if (previous == 0x7d && data[i] == 0x26) acked = 1;
+                previous = data[i];
+            }
+        }
+        return acked ? 5 : 6;
+    }
+    if (stopping && !strcmp(argv[1], "pppd-shunt")) {
+        finite_hold(200);
+        return 5;
+    }
     if (stopping && !strcmp(argv[1], "exchange")) {
         const unsigned char end[] = {0x7e, 0, 0xff};
         if (output(1, end, sizeof(end))) return 99;

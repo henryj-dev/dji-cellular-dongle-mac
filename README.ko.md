@@ -72,6 +72,8 @@ sudo make uninstall
 | 동글 꽂기 | 약 6~10초 안에 연결, 맥 전체 트래픽이 LTE로 |
 | 동글 빼기 | 세션 정리, 남은 키 삭제, 이전 네트워크로 복귀 |
 | 꽂힌 채 끊김 | 정리 후 5초, 10초, … 최대 5분 간격으로 재연결 |
+| 동글을 꽂아 둔 채 세션 종료(`reconnect`·`pause`·정지) | 모뎀이 PPP 데이터 모드에 남을 수 있음: 신호를 받은 pppd가 `notty` 중계 프로세스를 먼저 멈춰 LCP Terminate-Request가 모뎀에 가지 못함 |
+| 다음 세션이 데이터 모드에 남은 모뎀을 만남(신호 조회에 AT echo 없이 PPP 바이트가 옴) | 다이얼하지 않고 동글을 한 번 재열거(`up-recover=reenumerate result=ok\|open-error\|error`)한 뒤 `reason=modem-reset`으로 끝냄. 데몬은 동글이 다시 보이면 5초 뒤 새로 시작. 연결(또는 뽑기) 없이 두 번째가 오면 `upd=replug-required` |
 | 시도가 바로 실패하는 일이 3번 연속(강제 종료 뒤 모뎀이 데이터 모드에 갇힘) | `upd=replug-required`를 남기고 대기. 동글을 뺐다가(1초 이상) 다시 꽂으면 재개 |
 | 동글 2개 | 대기(1개만 지원) |
 | `launchctl bootout`·시스템 종료 | 세션을 정상 종료(최대 약 60초)한 뒤 정리 |

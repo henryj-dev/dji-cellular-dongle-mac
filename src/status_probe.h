@@ -105,6 +105,11 @@ struct status_command_result {
     /* Own-prefix lines met while printing (parsed or not); a single one is required
      * before the numbers are trusted. */
     unsigned value_lines;
+    /* Whole joined reply, counted at every analysis (assigned, not added):
+     * own echo lines anywhere, and bytes that are neither CR/LF nor printable
+     * ASCII (a PPP data stream, never AT text). Diagnostics and the pre-dial
+     * data-mode check only. */
+    unsigned own_echoes, binary;
     enum status_result result;
     enum status_attribution attribution;
     enum status_attribution_reason attribution_reason;

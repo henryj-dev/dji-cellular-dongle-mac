@@ -32,6 +32,9 @@ struct command { uint64_t at; const char *text; int peer; size_t length; /* 0: s
 static struct {
     uint64_t now, plug_at, unplug_at, replug_at, stop_at;
     int devices_when_plugged, path_bad;
+    /* Windows [from, to): count unknown, a second dongle, a failed clock; and
+     * the time the dongle becomes a new registry entry without an absence. */
+    uint64_t unknown_from, unknown_to, overlap_from, overlap_to, clock_bad_from, clock_bad_to, id_change_at;
     const struct script *scripts;
     unsigned script_count, spawned, terms, kills, closes, reaps;
     uint64_t spawn_at[8];
@@ -54,9 +57,16 @@ static struct {
     uint64_t reply_at[16];
     unsigned reply_count;
 } f;
-static int fake_devices(void *context) {
+static int in_window(uint64_t from, uint64_t to) { return to && f.now >= from && f.now < to; }
+static int fake_devices(void *context, uint64_t *id) {
     (void)context;
+    *id = 0;
     if (f.now < f.plug_at || (f.unplug_at && f.now >= f.unplug_at && (!f.replug_at || f.now < f.replug_at))) return 0;
+    if (in_window(f.unknown_from, f.unknown_to)) return -1;
+    if (in_window(f.overlap_from, f.overlap_to)) return 2;
+    /* A new entry after each plug and after id_change_at. */
+    if (f.devices_when_plugged == 1)
+        *id = 100 + (f.replug_at && f.now >= f.replug_at ? 100 : 0) + (f.id_change_at && f.now >= f.id_change_at ? 1000 : 0);
     return f.devices_when_plugged;
 }
 static int fake_path_ok(void *context, const char *path) {
@@ -122,7 +132,9 @@ static int fake_signal(void *context, pid_t pid, int number) {
     if (number == SIGKILL) { f.kills++; f.ended = 1; f.status = SIGKILL; }
     return 0;
 }
-static uint64_t fake_now(void *context) { (void)context; return f.now; }
+static uint64_t fake_now(void *context) {
+    (void)context; return in_window(f.clock_bad_from, f.clock_bad_to) ? UINT64_MAX : f.now;
+}
 static void fake_sleep(void *context, unsigned ms) { (void)context; CHECK(ms <= UPD_SLICE_MS && ms); advance(ms); }
 static int64_t fake_now_wall(void *context) { (void)context; return WALL_BASE + (int64_t)(f.now / 1000); }
 /* Every written status: one line, fixed shape, only plain JSON characters. */
@@ -774,6 +786,129 @@ int main(void) {
     CHECK(f.max_write_gap >= UPD_STATUS_HEARTBEAT_MS && f.max_write_gap <= UPD_STATUS_HEARTBEAT_MS + 1000);
     CHECK(f.heartbeat_writes >= 3 && f.heartbeat_writes <= 4 && f.status_writes <= 14 && !f.status_bad);
     CHECK(f.terms == 1 && f.status_removed == 1);
+
+    /* 38-51: a child that met the PPP data stream re-enumerated the dongle and
+     * ended with reason=modem-reset. */
+#define MR_OK "up-signal=unproven probe-status=0 stop=read-cap\nup-recover=reenumerate result=ok\n" \
+    "up-result=ended reason=modem-reset connected=no\n"
+#define MR_OPEN "up-signal=unproven probe-status=0 stop=read-cap\nup-recover=reenumerate result=open-error\n" \
+    "up-result=ended reason=modem-reset connected=no\n"
+#define SE "up-result=ended reason=session-error connected=no\n"
+#define CONNECTS {"--up", NULL, 2000, 100000, 3, 0, 0, 3000, 0, 0, 0, 0}
+#define AFTER(index, from, slack) CHECK(f.spawn_at[index] >= (from) && f.spawn_at[index] <= (from) + (slack))
+    /* 38: the dongle drops off and comes back (not a replug); the next session
+     * starts the minimum backoff after it is back, and connects. */
+    reset(38); f.plug_at = 0; f.unplug_at = 1500; f.replug_at = 3500; f.stop_at = 20000;
+    static const struct script s38[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s38, 3);
+    CHECK(!strstr(text, "upd=replug-required") && strstr(text, " child up-recover=reenumerate result=ok\n") &&
+          strstr(text, " upd=waiting devices=0\n") && occurrences("upd=reenumeration-back") == 1 &&
+          occurrences("upd=retry-in-ms=5000") == 1);
+    AFTER(2, 3500 + UPD_BACKOFF_MIN_MS, 1500);
+    CHECK(strstr(text, " child up=connected") && f.terms == 1);
+    /* 39: two modem resets in a row: replug required, and the second
+     * re-enumeration's absence and new ID do not clear it. */
+    reset(39); f.plug_at = 0; f.unplug_at = 9500; f.replug_at = 11500; f.stop_at = 30000;
+    static const struct script s39[] = {START_CLEAN, {"--up", MR_OPEN, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0},
+        {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}};
+    run(s39, 3);
+    CHECK(occurrences("upd=replug-required") == 1 && occurrences("upd=retry-in-ms=") == 1 &&
+          strstr(text, " upd=waiting devices=0\n") && occurrences("upd=reenumeration-back") == 1);
+    AFTER(2, 500 + UPD_BACKOFF_MIN_MS, 1500);
+    /* 40: a modem reset neither counts nor clears fast failures, and leaves the
+     * backoff where it was (10 s after the first session error). */
+    reset(40); f.plug_at = 0; f.stop_at = 40000;
+    static const struct script s40[] = {START_CLEAN, {"--up", SE, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0},
+        {"--up", MR_OPEN, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, {"--up", SE, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0},
+        {"--up", SE, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}};
+    run(s40, 5);
+    CHECK(occurrences("upd=replug-required") == 1 && occurrences("upd=retry-in-ms=5000") == 2 &&
+          occurrences("upd=retry-in-ms=10000") == 1 && occurrences("upd=retry-in-ms=") == 3);
+    CHECK(!strstr(text, "upd=reenumeration-"));
+    /* 41: a reported re-enumeration whose return is never seen (no absence, same
+     * ID): bounded wait, then the minimum backoff and the next session. */
+    reset(41); f.plug_at = 0; f.stop_at = 30000;
+    static const struct script s41[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s41, 3);
+    CHECK(occurrences("upd=reenumeration-unseen") == 1 && !strstr(text, "upd=replug-required") &&
+          !strstr(text, "upd=waiting devices=0") && !strstr(text, "upd=reenumeration-back"));
+    AFTER(2, 500 + UPD_REENUM_MS + UPD_BACKOFF_MIN_MS, 2500);
+    /* 42: the status keeps the label as the last end until the next one. */
+    reset(42); f.plug_at = 0; f.stop_at = 3000;
+    static const struct command c42[] = {{2000, "status\n", UPD_PEER_ROOT, 0}};
+    f.commands = c42; f.command_count = 1;
+    static const struct script s42[] = {START_CLEAN, {"--up", MR_OPEN, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}};
+    run(s42, 2);
+    CHECK(strstr(f.replies, "\"last_end\":{\"result\":\"ended\",\"reason\":\"modem-reset\",") &&
+          strstr(f.replies, "\"state\":\"retry-wait\""));
+    /* 43: a slow (not fast) session error between two modem resets keeps the
+     * count: the second reset still asks for a replug. */
+    reset(43); f.plug_at = 0; f.stop_at = 40000;
+    static const struct script s43[] = {START_CLEAN, {"--up", MR_OPEN, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0},
+        {"--up", SE, 0, 6000, 3, 0, 0, 0, 0, 0, 0, 0}, {"--up", MR_OPEN, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}};
+    run(s43, 4);
+    CHECK(occurrences("upd=replug-required") == 1 &&
+          strstr(text, "upd=replug-required") > strstr(text, "child up-result=ended reason=session-error"));
+    /* 44: back under a new registry ID without a visible absence. */
+    reset(44); f.plug_at = 0; f.id_change_at = 2000; f.stop_at = 20000;
+    static const struct script s44[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s44, 3);
+    CHECK(occurrences("upd=reenumeration-back") == 1 && !strstr(text, "upd=waiting devices=0"));
+    AFTER(2, 2000 + UPD_BACKOFF_MIN_MS, 1500);
+    /* 45: an overlap (two dongles for a while) is never read as the return. */
+    reset(45); f.plug_at = 0; f.overlap_from = 3000; f.overlap_to = 6000; f.id_change_at = 3000; f.stop_at = 20000;
+    static const struct script s45[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s45, 3);
+    CHECK(occurrences("upd=reenumeration-back") == 1 && strstr(text, " upd=waiting devices=2\n"));
+    AFTER(2, 6000 + UPD_BACKOFF_MIN_MS, 1500);
+    /* 46: cleanup-required with modem-reset: the cleanup runs, then the wait. */
+    reset(46); f.plug_at = 0; f.id_change_at = 1500; f.stop_at = 20000;
+    static const struct script s46[] = {START_CLEAN,
+        {"--up", "up-recover=reenumerate result=ok\nup-result=cleanup-required reason=modem-reset connected=no\n",
+         0, 500, 4, 0, 0, 0, 0, 0, 0, 0},
+        {"--cleanup", "cleanup=clean\n", 0, 100, 0, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s46, 4);
+    CHECK(occurrences("upd=reenumeration-back") == 1 && occurrences("upd=retry-in-ms=") == 1 &&
+          occurrences("upd=session-ended mode=cleanup exit=0") == 2 && strstr(text, " child up=connected"));
+    /* 47: gone and not back within the window: its own label; the absence
+     * then counts as an unplug. */
+    reset(47); f.plug_at = 0; f.unplug_at = 1500; f.stop_at = 25000;
+    static const struct script s47[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}};
+    run(s47, 2);
+    CHECK(occurrences("upd=reenumeration-not-back") == 1 && !strstr(text, "upd=reenumeration-unseen"));
+    /* 48: reconnect, pause and resume during the wait, and a reconnect during
+     * the settle wait: the remaining settle time still runs. */
+    reset(48); f.plug_at = 0; f.id_change_at = 8000; f.stop_at = 20000;
+    static const struct command c48[] = {{2000, "reconnect\n", UPD_PEER_ROOT, 0}, {3000, "pause\n", UPD_PEER_ROOT, 0},
+        {4000, "resume\n", UPD_PEER_ROOT, 0}, {10000, "reconnect\n", UPD_PEER_ROOT, 0}};
+    f.commands = c48; f.command_count = 4;
+    static const struct script s48[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s48, 3);
+    CHECK(!strcmp(f.replies, "ok\nok\nok\nok\n") && occurrences("upd=reenumeration-back") == 1);
+    AFTER(2, 8000 + UPD_BACKOFF_MIN_MS, 1500);
+    /* 49: a stop during the wait ends the daemon; no other session. */
+    reset(49); f.plug_at = 0; f.stop_at = 5000;
+    static const struct script s49[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}};
+    run(s49, 2);
+    CHECK(!strstr(text, "upd=reenumeration-") && !strstr(text, "upd=retry-in-ms="));
+    /* 50: an unknown count during the wait decides nothing. */
+    reset(50); f.plug_at = 0; f.unknown_from = 3000; f.unknown_to = 5000; f.id_change_at = 4000; f.stop_at = 20000;
+    static const struct script s50[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s50, 3);
+    CHECK(occurrences("upd=reenumeration-back") == 1 && strstr(text, " upd=waiting devices=unknown\n"));
+    AFTER(2, 5000 + UPD_BACKOFF_MIN_MS, 1500);
+    /* 51: a failed clock ends the wait (unseen) and the settle wait; the daemon
+     * goes on instead of stalling. */
+    reset(51); f.plug_at = 0; f.clock_bad_from = 3000; f.clock_bad_to = 4000; f.stop_at = 20000;
+    static const struct script s51[] = {START_CLEAN, {"--up", MR_OK, 0, 500, 3, 0, 0, 0, 0, 0, 0, 0}, CONNECTS};
+    run(s51, 3);
+    CHECK(occurrences("upd=reenumeration-unseen") == 1 && !strstr(text, "upd=retry-in-ms="));
+    AFTER(2, 3000, 1500);
+#undef MR_OK
+#undef MR_OPEN
+#undef SE
+#undef CONNECTS
+#undef AFTER
 
     /* 37: the native backend on a real temporary tree under build/ (no root:
      * the expected owner is this user, the admin group is this user's group). */

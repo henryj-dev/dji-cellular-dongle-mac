@@ -7,6 +7,7 @@
 #include "ppp_runner.h"
 #include "ppp_trial_preflight.h"
 #include "status_probe.h"
+#include "usb_recover.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <ifaddrs.h>
@@ -323,6 +324,12 @@ static int fake_probe_signal(io_service_t service, IOUSBDeviceInterface **device
     return DJI_OK;
 }
 #define usb_observer_probe_signal fake_probe_signal
+/* Confirmed numbers only here, so the modem is never re-enumerated. */
+static enum usb_recover_result fake_recover(IOUSBDeviceInterface **device) {
+    (void)device; CHECK(0);
+    return USB_RECOVER_ERROR;
+}
+#define usb_recover_reenumerate fake_recover
 #define open(...) lock_fake_open(__VA_ARGS__)
 #define flock(...) lock_fake_flock(__VA_ARGS__)
 #define close(...) lock_fake_close(__VA_ARGS__)

@@ -231,6 +231,49 @@ static void negotiation_flow_test(const char *path) {
     closed(&s, &f);
     CHECK(s.error == PPP_ERROR_NONE);
 }
+/* Graceful stop with pppd-like children (exit 5 on the signal, see fixture).
+ * pppd-term: its LCP Terminate-Request reaches stdout; the relay carries it to
+ * USB during DRAIN and the peer's Terminate-Ack back to it, and the observer
+ * counts the request as local. pppd-shunt (pppd 'notty': the signal kills the
+ * shunt first): nothing after the signal reaches stdout, so nothing is sent
+ * and ppp-terminate stays none with exit 5, TERM 1 and KILL 0 — the summary
+ * of a graceful stop on the real device. Neither proves remote termination,
+ * and without peer_done (never synthesized) the drain ends on its deadline. */
+static void termination_test(const char *path) {
+    static const unsigned char request[] = {0xff, 0x03, 0xc0, 0x21, 0x05, 0x02, 0x00, 0x04};
+    static const unsigned char ack[] = {0xff, 0x03, 0xc0, 0x21, 0x06, 0x02, 0x00, 0x04};
+    unsigned char frame[32];
+    size_t length = hdlc_frame(frame, request, sizeof(request));
+    for (unsigned shunt = 0; shunt < 2; shunt++) {
+        struct ppp_supervisor s;
+        struct fake f;
+        start(&s, &f, path, shunt ? "pppd-shunt" : "pppd-term", 64);
+        ready(&s); connect_peer(&s, &f);
+        uint64_t deadline = wall_now() + 3000;
+        while (f.written < 3 && !s.error && wall_now() < deadline) drive(&s);
+        CHECK(f.written == 3 && !memcmp(f.output, "RDY", 3));
+        CHECK(ppp_supervisor_stop(&s) == 0 && s.phase == PPP_DRAIN && s.child.term_signals == 1);
+        if (!shunt) {
+            deadline = wall_now() + 3000;
+            while (f.written < 3 + length && !s.error && wall_now() < deadline) drive(&s);
+            CHECK(f.written == 3 + length && !memcmp(f.output + 3, frame, length));
+            CHECK(s.negotiation.summary.terminate == PPP_NEGO_TERMINATE_LOCAL);
+            f.length += hdlc_frame(f.input + f.length, ack, sizeof(ack));
+        }
+        deadline = wall_now() + 3000;
+        while (!s.child.reaped && !s.error && wall_now() < deadline) drive(&s);
+        /* pppd-term exits 5 only after the Ack arrived (6 on its own timeout). */
+        CHECK(s.child.reaped && WIFEXITED(s.child.wait_status) && WEXITSTATUS(s.child.wait_status) == 5);
+        const struct ppp_nego_summary *n = &s.negotiation.summary;
+        CHECK(n->codes[PPP_NEGO_LOCAL][PPP_NEGO_LCP][5] == (shunt ? 0u : 1u));
+        CHECK(n->codes[PPP_NEGO_PEER][PPP_NEGO_LCP][6] == (shunt ? 0u : 1u));
+        CHECK(n->terminate == (shunt ? 0u : PPP_NEGO_TERMINATE_LOCAL));
+        if (shunt) CHECK(f.written == 3 && !s.stream.rx.accepted);
+        CHECK(s.phase == PPP_DRAIN && !s.error && !s.peer_done && !s.child.kill_signals);
+        force_cleanup(&s, &f);
+        CHECK(s.error == PPP_ERROR_TIMEOUT && s.child.term_signals == 1 && !s.child.kill_signals);
+    }
+}
 static void gate_test(const char *path) {
     struct ppp_supervisor s;
     struct fake f;
@@ -1009,7 +1052,7 @@ int main(int argc, char **argv) {
     int baseline = fd_count();
     CHECK(pthread_atfork(NULL, NULL, child_before_exec) == 0);
     transfer_test(argv[1], 3, 4096); transfer_test(argv[1], 17, 31);
-    transfer_test(argv[1], 127, 1); negotiation_flow_test(argv[1]);
+    transfer_test(argv[1], 127, 1); negotiation_flow_test(argv[1]); termination_test(argv[1]);
     gate_test(argv[1]); usb_failures_test(argv[1]);
     lifecycle_test(argv[1]); deadlines_test(argv[1]); boundary_test(argv[1]); exec_test(argv[1]); hooks_test(argv[1]);
     observed_test(argv[1]); cleanup_barriers_test(argv[1]);

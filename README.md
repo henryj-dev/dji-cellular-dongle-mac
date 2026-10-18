@@ -69,6 +69,8 @@ sudo make uninstall
 | Dongle plugged in | Connects in about 6–10 s; all traffic of the Mac goes over LTE |
 | Dongle unplugged | Session stops, leftover keys removed, previous network comes back |
 | Link drops while plugged in | Clean up, then reconnect after 5 s, 10 s, … up to 5 min |
+| Session ended while the dongle stays plugged in (`reconnect`, `pause`, stop) | The modem may stay in PPP data mode: pppd's LCP Terminate-Request cannot reach it (pppd stops its `notty` shunt on the signal) |
+| The next session finds the modem still in data mode (the signal query gets PPP bytes, no AT echo) | Does not dial; re-enumerates the dongle once (`up-recover=reenumerate result=ok\|open-error\|error`), ends with `reason=modem-reset`; the daemon waits until the dongle is back, then 5 s, and starts again. A second such end without a connection (or an unplug) in between: `upd=replug-required` |
 | Attempts fail right away three times (modem stuck in data mode after a hard stop) | Logs `upd=replug-required` and waits; unplug and plug the dongle again (keep it out for more than a second) |
 | Two dongles | Waits; only one dongle is supported |
 | `launchctl bootout` / shutdown | Stops the session cleanly (up to about 60 s), then cleans up |

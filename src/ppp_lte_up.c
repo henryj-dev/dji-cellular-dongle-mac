@@ -8,6 +8,7 @@
 #include "ppp_trial_preflight.h"
 #include "status_probe.h"
 #include "usb_observer.h"
+#include "usb_recover.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -66,7 +67,7 @@ struct up_context {
     uint64_t loop_slices;
     unsigned seen_losses, seen_restores;
     int captured, start_valid, link_started, connected, user_stop, clock_error, release_error;
-    int final_observed, reap_cleaned, output_error;
+    int final_observed, reap_cleaned, output_error, recover_attempted;
     const char *reason;
 };
 static volatile sig_atomic_t up_hangup;
@@ -279,6 +280,17 @@ static void up_signal(struct up_context *c, int status, const struct status_prob
         " probe-status=%d stop=%s\n", csq && cesq ? "ok" : csq || cesq ? "partial" : "unproven",
         rssi, rssi_dbm, rsrp, rsrp_dbm, rsrq, rsrq_db, status, UP_NAME(up_signal_stops, r->stop));
 }
+/* Data-mode signature of the pre-dial query, kept narrow: the run stopped on its
+ * first command (AT+CSQ, sent once) with the read cap or a zero-length read, the
+ * reply never held our own echo, and at least one read carried bytes that are not
+ * AT text (neither CR/LF nor printable ASCII). A modem in command mode echoes
+ * within milliseconds; this is the PPP stream of a session the modem never left.
+ * An unconfirmed stop needs our echo first, so it can never match. */
+static int up_data_mode(int probe, const struct status_probe_result *r) {
+    const struct status_command_result *k = &r->commands[1];
+    return probe == DJI_OK && (r->stop == STATUS_STOP_READ_CAP || r->stop == STATUS_STOP_ZERO_COUNT) &&
+        r->stop_index == 1 && r->commands_sent == 1 && k->sent && k->reads && !k->own_echoes && k->binary;
+}
 static int up_target(void *context, io_service_t service, IOUSBDeviceInterface **device,
                      uint64_t registry_id, const struct descriptor_config *config) {
     struct up_context *c = context;
@@ -289,6 +301,16 @@ static int up_target(void *context, io_service_t service, IOUSBDeviceInterface *
     int probe = usb_observer_probe_signal(service, device, registry_id, config, &up_hangup, &signal);
     up_signal(c, probe, &signal);
     if (probe == DJI_CANCELLED || up_hangup) { c->user_stop = 1; c->reason = "user-stop"; return DJI_OK; }
+    /* Never dial into a stuck data stream: re-enumerate the dongle once (it comes
+     * back in command mode) and end; the daemon starts the next session. */
+    if (!c->recover_attempted && up_data_mode(probe, &signal)) {
+        c->recover_attempted = 1;
+        enum usb_recover_result recovered = usb_recover_reenumerate(device);
+        up_line(c, "up-recover=reenumerate result=%s\n", recovered == USB_RECOVER_OK ? "ok" :
+            recovered == USB_RECOVER_OPEN_ERROR ? "open-error" : "error");
+        c->reason = "modem-reset";
+        return DJI_OK;
+    }
     const uint32_t read_timeout = UP_READ_TIMEOUT_MS;
     struct ppp_session_request request = {.service = service, .device = device,
         .registry_id = registry_id, .config = config,

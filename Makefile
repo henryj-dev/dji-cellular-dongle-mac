@@ -55,6 +55,12 @@ build/status_probe_test: tests/status_probe_test.c src/status_probe.c src/status
 build/status_probe_test_sanitize: tests/status_probe_test.c src/status_probe.c src/status_probe.h src/at_probe.c src/at_probe.h src/payload_analysis.c src/payload_analysis.h src/discovery.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) tests/status_probe_test.c src/status_probe.c src/at_probe.c src/payload_analysis.c -o $@
 
+build/usb_recover_test: tests/usb_recover_test.c src/usb_recover.c src/usb_recover.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/usb_recover_test.c src/usb_recover.c $(FRAMEWORKS) -o $@
+
+build/usb_recover_test_sanitize: tests/usb_recover_test.c src/usb_recover.c src/usb_recover.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) tests/usb_recover_test.c src/usb_recover.c $(FRAMEWORKS) -o $@
+
 build/pdp_probe_test: tests/pdp_probe_test.c src/status_probe.c src/status_probe.h src/at_probe.c src/at_probe.h src/payload_analysis.c src/payload_analysis.h src/discovery.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/pdp_probe_test.c src/status_probe.c src/at_probe.c src/payload_analysis.c -o $@
 
@@ -152,7 +158,7 @@ build/ppp_usb_test: tests/ppp_usb_test.c $(PPP_USB_SOURCES) $(PPP_USB_HEADERS) |
 build/ppp_usb_test_sanitize: tests/ppp_usb_test.c $(PPP_USB_SOURCES) $(PPP_USB_HEADERS) | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) tests/ppp_usb_test.c src/observer_policy.c src/payload_analysis.c src/at_probe.c src/status_probe.c src/descriptor.c src/ppp_supervisor.c src/ppp_child.c src/offline_stream.c src/ppp_launch.c src/ppp_negotiation.c src/ppp_auth_probe.c $(FRAMEWORKS) -o $@
 
-test: build/ppp_lte_upd_test build/dji_dongle_test build/ppp_lte_up_test build/ppp_lte_up_integration_test build/ppp_lte_link_test build/ppp_lte_service_test build/ppp_lte_network_test build/ppp_lte_once_test build/ppp_lte_once_integration_test build/ppp_auth_probe_test build/ppp_auth_trial_test build/ppp_trial_observer_test build/ppp_local_check_test build/ppp_launch_test build/ppp_usb_test build/ppp_child_fixture build/ppp_child_test build/ppp_supervisor_test build/ppp_negotiation_test build/offline_stream_test build/descriptor_parser_test build/observer_test build/payload_analysis_test build/reconnect_test build/observer_signal_test build/at_probe_test build/ati_probe_test build/status_probe_test build/pdp_probe_test build/data_support_probe_test
+test: build/ppp_lte_upd_test build/dji_dongle_test build/ppp_lte_up_test build/ppp_lte_up_integration_test build/ppp_lte_link_test build/ppp_lte_service_test build/ppp_lte_network_test build/ppp_lte_once_test build/ppp_lte_once_integration_test build/ppp_auth_probe_test build/ppp_auth_trial_test build/ppp_trial_observer_test build/ppp_local_check_test build/ppp_launch_test build/ppp_usb_test build/ppp_child_fixture build/ppp_child_test build/ppp_supervisor_test build/ppp_negotiation_test build/offline_stream_test build/descriptor_parser_test build/observer_test build/payload_analysis_test build/reconnect_test build/observer_signal_test build/at_probe_test build/ati_probe_test build/status_probe_test build/pdp_probe_test build/data_support_probe_test build/usb_recover_test
 	./build/descriptor_parser_test $(FIXTURE)
 	./build/observer_test $(FIXTURE)
 	./build/payload_analysis_test
@@ -161,6 +167,7 @@ test: build/ppp_lte_upd_test build/dji_dongle_test build/ppp_lte_up_test build/p
 	./build/at_probe_test
 	./build/ati_probe_test
 	./build/status_probe_test
+	./build/usb_recover_test
 	./build/pdp_probe_test
 	./build/data_support_probe_test
 	./build/offline_stream_test
@@ -183,7 +190,7 @@ test: build/ppp_lte_upd_test build/dji_dongle_test build/ppp_lte_up_test build/p
 	./build/ppp_supervisor_test $(abspath build/ppp_child_fixture)
 	./build/ppp_usb_test $(abspath build/ppp_child_fixture) $(FIXTURE)
 
-test-sanitize: build/ppp_lte_upd_test_sanitize build/dji_dongle_test_sanitize build/ppp_lte_up_test_sanitize build/ppp_lte_up_integration_test_sanitize build/ppp_lte_link_test_sanitize build/ppp_lte_service_test_sanitize build/ppp_lte_network_test_sanitize build/ppp_lte_once_test_sanitize build/ppp_lte_once_integration_test_sanitize build/ppp_auth_probe_test_sanitize build/ppp_auth_trial_test_sanitize build/ppp_trial_observer_test_sanitize build/ppp_local_check_test_sanitize build/ppp_launch_test_sanitize build/ppp_usb_test_sanitize build/ppp_child_fixture_sanitize build/ppp_child_test_sanitize build/ppp_supervisor_test_sanitize build/ppp_negotiation_test_sanitize build/offline_stream_test_sanitize build/descriptor_parser_test_sanitize build/observer_test_sanitize build/payload_analysis_test_sanitize build/reconnect_test_sanitize build/observer_signal_test_sanitize build/at_probe_test_sanitize build/ati_probe_test_sanitize build/status_probe_test_sanitize build/pdp_probe_test_sanitize build/data_support_probe_test_sanitize
+test-sanitize: build/ppp_lte_upd_test_sanitize build/dji_dongle_test_sanitize build/ppp_lte_up_test_sanitize build/ppp_lte_up_integration_test_sanitize build/ppp_lte_link_test_sanitize build/ppp_lte_service_test_sanitize build/ppp_lte_network_test_sanitize build/ppp_lte_once_test_sanitize build/ppp_lte_once_integration_test_sanitize build/ppp_auth_probe_test_sanitize build/ppp_auth_trial_test_sanitize build/ppp_trial_observer_test_sanitize build/ppp_local_check_test_sanitize build/ppp_launch_test_sanitize build/ppp_usb_test_sanitize build/ppp_child_fixture_sanitize build/ppp_child_test_sanitize build/ppp_supervisor_test_sanitize build/ppp_negotiation_test_sanitize build/offline_stream_test_sanitize build/descriptor_parser_test_sanitize build/observer_test_sanitize build/payload_analysis_test_sanitize build/reconnect_test_sanitize build/observer_signal_test_sanitize build/at_probe_test_sanitize build/ati_probe_test_sanitize build/status_probe_test_sanitize build/pdp_probe_test_sanitize build/data_support_probe_test_sanitize build/usb_recover_test_sanitize
 	./build/descriptor_parser_test_sanitize $(FIXTURE)
 	./build/observer_test_sanitize $(FIXTURE)
 	./build/payload_analysis_test_sanitize
@@ -192,6 +199,7 @@ test-sanitize: build/ppp_lte_upd_test_sanitize build/dji_dongle_test_sanitize bu
 	./build/at_probe_test_sanitize
 	./build/ati_probe_test_sanitize
 	./build/status_probe_test_sanitize
+	./build/usb_recover_test_sanitize
 	./build/pdp_probe_test_sanitize
 	./build/data_support_probe_test_sanitize
 	./build/offline_stream_test_sanitize
@@ -255,7 +263,7 @@ PPP_LTE_HEADERS := src/ppp_lte_network.h src/discovery_internal.h $(PPP_USB_HEAD
 PPP_LTE_SOURCES := src/ppp_lte_once.c src/ppp_lte_network.c src/ppp_trial_preflight.c src/ppp_trial_observer.c src/discovery.c src/reconnect.c $(PPP_USB_SOURCES)
 
 .PHONY: ppp-lte-sdk
-ppp-lte-sdk: build/ppp_lte_once_sdk.o build/ppp_lte_network_sdk.o build/ppp_trial_preflight_sdk.o build/ppp_lte_service_sdk.o build/ppp_lte_link_sdk.o build/ppp_lte_up_sdk.o
+ppp-lte-sdk: build/ppp_lte_once_sdk.o build/ppp_lte_network_sdk.o build/ppp_trial_preflight_sdk.o build/ppp_lte_service_sdk.o build/ppp_lte_link_sdk.o build/ppp_lte_up_sdk.o build/usb_recover_sdk.o
 
 build/ppp_trial_preflight_sdk.o: src/ppp_trial_preflight.c $(PPP_AUTH_HEADERS) | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -309,10 +317,13 @@ build/ppp_lte_link_test: tests/ppp_lte_link_test.c src/ppp_lte_link.c $(PPP_LINK
 build/ppp_lte_link_test_sanitize: tests/ppp_lte_link_test.c src/ppp_lte_link.c $(PPP_LINK_HEADERS) | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) $< $(PPP_AUTH_FRAMEWORKS) -o $@
 
-PPP_UP_HEADERS := $(PPP_LTE_HEADERS) $(PPP_SERVICE_HEADERS) $(PPP_LINK_HEADERS)
-PPP_UP_SOURCES := src/ppp_lte_up.c src/ppp_lte_link.c src/ppp_lte_service.c src/ppp_lte_network.c src/ppp_trial_preflight.c src/ppp_trial_observer.c src/discovery.c src/reconnect.c $(PPP_USB_SOURCES)
+PPP_UP_HEADERS := $(PPP_LTE_HEADERS) $(PPP_SERVICE_HEADERS) $(PPP_LINK_HEADERS) src/usb_recover.h
+PPP_UP_SOURCES := src/ppp_lte_up.c src/usb_recover.c src/ppp_lte_link.c src/ppp_lte_service.c src/ppp_lte_network.c src/ppp_trial_preflight.c src/ppp_trial_observer.c src/discovery.c src/reconnect.c $(PPP_USB_SOURCES)
 
 build/ppp_lte_up_sdk.o: src/ppp_lte_up.c $(PPP_UP_HEADERS) | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+build/usb_recover_sdk.o: src/usb_recover.c src/usb_recover.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 build/ppp_lte_up: $(PPP_UP_SOURCES) $(PPP_UP_HEADERS) | build
@@ -576,7 +587,21 @@ verify-offline: all agent build/agent_app_test ppp-usb-sdk ppp-auth-sdk ppp-lte-
 	@./build/dji-lte-mac --help --probe-data-support > $(OFFLINE_LOG_DIR)/invalid-help-data-support.stdout 2> $(OFFLINE_LOG_DIR)/invalid-help-data-support.stderr; rc=$$?; printf 'invalid_help_data_support_exit=%s\n' "$$rc" > $(OFFLINE_LOG_DIR)/invalid-help-data-support.status; test "$$rc" -eq 2
 	@./build/dji-lte-mac --wait-reconnect --probe-data-support > $(OFFLINE_LOG_DIR)/invalid-wait-data-support.stdout 2> $(OFFLINE_LOG_DIR)/invalid-wait-data-support.stderr; rc=$$?; printf 'invalid_wait_data_support_exit=%s\n' "$$rc" > $(OFFLINE_LOG_DIR)/invalid-wait-data-support.status; test "$$rc" -eq 2
 	grep -q -- '--probe-data-support' $(OFFLINE_LOG_DIR)/help.stdout
-	! grep -nE 'ClearPipeStall|ResetDevice|ResetPipe|ReEnumerate|SetConfiguration|SetAlternateInterface|ControlRequest|DeviceRequest|USBDeviceOpen|OpenSeize|WritePipeAsync|WriteIsochPipe|kIOServiceInteractionAllowed' src/*.c src/*.h
+	! grep -nE 'ClearPipeStall|ResetDevice|ResetPipe|SetConfiguration|SetAlternateInterface|ControlRequest|DeviceRequest|OpenSeize|WritePipeAsync|WriteIsochPipe|kIOServiceInteractionAllowed' src/*.c src/*.h
+	@# Modem recovery: one plain device open and one re-enumeration, in usb_recover.c only; never a seizing open.
+	test "$$(grep -l 'ReEnumerate' src/*.c src/*.h)" = "src/usb_recover.c"
+	test "$$(grep -c 'ReEnumerate' src/usb_recover.c)" -eq 1
+	test "$$(grep -c -- '->USBDeviceReEnumerate(dev, 0)' src/usb_recover.c)" -eq 1
+	test "$$(grep -l 'USBDeviceOpen' src/*.c src/*.h)" = "src/usb_recover.c"
+	test "$$(grep -c 'USBDeviceOpen' src/usb_recover.c)" -eq 1
+	test "$$(grep -c -- '->USBDeviceOpen(dev)' src/usb_recover.c)" -eq 1
+	test "$$(grep -l 'usb_recover_reenumerate(' src/*.c | tr '\n' ' ')" = "src/ppp_lte_up.c src/usb_recover.c "
+	test "$$(grep -c 'usb_recover_reenumerate(device)' src/ppp_lte_up.c)" -eq 1
+	! grep -rn 'OpenSeize' src
+	test "$$(grep -oE '\(\*[a-z]+\)->[A-Za-z]+' src/usb_recover.c | LC_ALL=C sort -u | tr '\n' ' ')" = "(*dev)->Release (*dev)->USBDeviceClose (*dev)->USBDeviceOpen (*dev)->USBDeviceReEnumerate (*device)->QueryInterface "
+	! grep -nE 'USBDeviceSuspend|AbortPipeZero|RequestExtraPower' src/*.c src/*.h
+	test "$$(grep -lE 'kIOUSBDeviceInterfaceID[0-9]{3}' src/*.c src/*.h)" = "src/usb_recover.c"
+	test "$$(grep -oE 'kIOUSBDeviceInterfaceID[0-9]+' src/usb_recover.c | LC_ALL=C sort -u)" = "kIOUSBDeviceInterfaceID187"
 	! grep -nE 'ReadPipeAsync|AbortPipe|CreateInterfaceAsyncEventSource' $$(find src -type f \( -name '*.c' -o -name '*.h' \) ! -name ppp_usb.c)
 	test "$$(grep -c -- '->ReadPipeAsyncTO(interface, in, slot->input, sizeof(slot->input),' src/ppp_usb.c)" -eq 1
 	test "$$(grep -c -- '->AbortPipe(interface, a->in_pipe)' src/ppp_usb.c)" -eq 1

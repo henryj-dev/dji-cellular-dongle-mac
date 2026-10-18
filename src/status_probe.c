@@ -314,13 +314,16 @@ static int analyze_reply(unsigned index, const uint8_t *bytes, size_t size, unsi
     int foreign_echo = 0, final_before = 0, stale_before = 0, foreign = 0, partial = 0, trailing = 0,
         cms = 0, unlisted = 0, other = 0, final_after = 0;
     const int skip = (flags & REPLY_SKIP_PRE_ECHO) != 0;
-    size_t at = 0;
+    size_t at = 0, binary = 0, own_echoes = 0;
+    for (size_t i = 0; i < size; i++)
+        if (bytes[i] != '\r' && bytes[i] != '\n' && (bytes[i] < 0x20 || bytes[i] > 0x7e)) binary++;
     while (at < size) {
         if (bytes[at] == '\r' || bytes[at] == '\n') { at++; continue; }
         size_t start = at;
         while (at < size && bytes[at] != '\r' && bytes[at] != '\n') at++;
         const uint8_t *line = bytes + start;
         size_t length = at - start;
+        if (at != size && equals(line, length, ECHOES[index])) own_echoes++;
         if (skip && at != size && echoes == 0 && !equals(line, length, ECHOES[index])) {
             /* Earlier output is never attributed to this request; only an own prefix,
              * which could be this reply arriving without its echo, blocks MATCHED. */
@@ -367,6 +370,8 @@ static int analyze_reply(unsigned index, const uint8_t *bytes, size_t size, unsi
     else reason = STATUS_REASON_FORMAT_ONLY;
     /* Assigned, not added, so repeated scans of the same joined bytes never accumulate. */
     command->pre_echo_skipped = (unsigned)(skipped > UINT32_MAX ? UINT32_MAX : skipped);
+    command->own_echoes = (unsigned)(own_echoes > UINT32_MAX ? UINT32_MAX : own_echoes);
+    command->binary = (unsigned)(binary > UINT32_MAX ? UINT32_MAX : binary);
     command->attribution_reason = reason;
     command->attribution = reason == STATUS_REASON_FORMAT_ONLY ? STATUS_ATTRIBUTION_MATCHED
                            : reason <= STATUS_REASON_MULTI_FINAL ? STATUS_ATTRIBUTION_MISMATCH

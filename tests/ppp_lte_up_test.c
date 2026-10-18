@@ -7,6 +7,7 @@
 #include "ppp_runner.h"
 #include "ppp_trial_preflight.h"
 #include "status_probe.h"
+#include "usb_recover.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -342,6 +343,29 @@ static int fake_probe_signal(io_service_t service, IOUSBDeviceInterface **device
         return signal_mode == 1 ? DJI_GONE : DJI_CANCELLED;
     }
     struct status_command_result *csq = &r->commands[1], *cesq = &r->commands[STATUS_PROBE_CESQ_INDEX];
+    /* 10..19: CSQ stopped before completion. 10 read-cap and 11 zero-count with
+     * data bytes and no echo (the data-mode signature); near misses: 12 own echo
+     * seen, 13 text only, 14 timeout, 15 time-budget, 16 a close error, 17 no
+     * completed read (binary still set), 18 data mode but a stop arrives during
+     * the query, 19 the run stopped on CESQ (second command) with data bytes. */
+    if (signal_mode >= 10) {
+        r->commands_sent = signal_mode == 19 ? 2 : 1;
+        r->stop_index = signal_mode == 19 ? STATUS_PROBE_CESQ_INDEX : 1;
+        r->stop = signal_mode == 11 ? STATUS_STOP_ZERO_COUNT : signal_mode == 14 ? STATUS_STOP_TIMEOUT :
+            signal_mode == 15 ? STATUS_STOP_TIME_BUDGET : STATUS_STOP_READ_CAP;
+        *csq = (struct status_command_result){.sent = 1, .reads = signal_mode == 17 ? 0 : 4,
+            .own_echoes = signal_mode == 12, .binary = signal_mode == 13 ? 0 : 412,
+            .attribution_reason = STATUS_REASON_NO_ECHO};
+        if (signal_mode == 19) {
+            *csq = (struct status_command_result){.sent = 1, .reads = 1, .complete = 1, .own_echoes = 1,
+                .values = 2, .value_lines = 1, .value = {20, 99}, .result = STATUS_RESULT_OK,
+                .attribution = STATUS_ATTRIBUTION_MATCHED};
+            *cesq = (struct status_command_result){.sent = 1, .reads = 4, .binary = 412,
+                .attribution_reason = STATUS_REASON_NO_ECHO};
+        }
+        if (signal_mode == 18) up_hangup = 1;
+        return signal_mode == 16 ? DJI_CLOSE_ERROR : DJI_OK;
+    }
     *csq = (struct status_command_result){.sent = 1, .complete = 1, .values = 2, .value_lines = 1, .value = {20, 99},
         .result = STATUS_RESULT_OK, .attribution = STATUS_ATTRIBUTION_MATCHED};
     if (signal_mode == 3) {
@@ -357,6 +381,15 @@ static int fake_probe_signal(io_service_t service, IOUSBDeviceInterface **device
     return DJI_OK;
 }
 #define usb_observer_probe_signal fake_probe_signal
+/* Re-enumeration: counted, never a device. Kept outside f, which setup() clears. */
+static enum usb_recover_result recover_result;
+static unsigned recovers;
+static enum usb_recover_result fake_recover(IOUSBDeviceInterface **device) {
+    recovers++;
+    CHECK(device != NULL && !f.starts && !f.slices); /* before any session */
+    return recover_result;
+}
+#define usb_recover_reenumerate fake_recover
 #define ppp_lte_link_init fake_link_init
 #define ppp_lte_link_step fake_link_step
 #define ppp_lte_service_cleanup(...) fake_cleanup(__VA_ARGS__)
@@ -632,6 +665,45 @@ static void signal_cancelled(void) {
     CHECK(strstr(text, line) && strstr(text, "up-result=ended reason=user-stop connected=no "));
     signal_mode = 0;
 }
+/* Data-mode signature before dialing: one re-enumeration, no session, exit 3. */
+static void data_mode(int mode, enum usb_recover_result result, const char *label) {
+    setup(USER_STOP); lock_opens = lock_closes = lock_takes = 0; signal_probes = 0; recovers = 0;
+    signal_mode = mode; recover_result = result;
+    FILE *output = tmpfile(); CHECK(output != NULL); if (!output) return;
+    f.out = output;
+    char *argv[] = {"up", "--up"};
+    int code = lte_up(2, argv, output, NULL);
+    CHECK(code == 3 && signal_probes == 1 && recovers == 1 && !f.starts && !f.slices && f.finishes == 1);
+    CHECK(lock_closes == lock_opens && lock_takes == 1u && f.stores == f.store_releases && f.restores_sig == 2);
+    CHECK(fseek(output, 0, SEEK_SET) == 0);
+    char text[8192] = {0}; (void)fread(text, 1, sizeof(text) - 1, output);
+    fclose(output);
+    char line[96];
+    (void)snprintf(line, sizeof(line), "\nup-recover=reenumerate result=%s\n", label);
+    const char *signal = strstr(text, "\nup-signal=unproven "), *recover = strstr(text, line),
+        *summary = strstr(text, "\nup-result=ended reason=modem-reset connected=no ");
+    CHECK(signal && recover && summary && signal < recover && recover < summary);
+    CHECK(strstr(text, mode == 11 ? " stop=zero-count\n" : " stop=read-cap\n") != NULL);
+    CHECK(strstr(text, " sc-reap=not-run ") && strstr(text, " next-run-cleanup=not-required "));
+    if (!summary) fprintf(stderr, "FAIL lte-up data-mode text=%s\n", text);
+    signal_mode = 0; recover_result = USB_RECOVER_OK;
+}
+/* Near misses dial as before and never re-enumerate; a stop during the query wins. */
+static void data_mode_near_miss(int mode) {
+    setup(USER_STOP); lock_opens = lock_closes = lock_takes = 0; signal_probes = 0; recovers = 0;
+    signal_mode = mode;
+    FILE *output = tmpfile(); CHECK(output != NULL); if (!output) return;
+    f.out = output;
+    char *argv[] = {"up", "--up"};
+    int code = lte_up(2, argv, output, NULL);
+    CHECK(fseek(output, 0, SEEK_SET) == 0);
+    char text[8192] = {0}; (void)fread(text, 1, sizeof(text) - 1, output);
+    fclose(output);
+    CHECK(!recovers && !strstr(text, "up-recover=") && !strstr(text, "modem-reset"));
+    if (mode == 18) CHECK(code == 3 && !f.starts && strstr(text, "up-result=ended reason=user-stop connected=no "));
+    else CHECK(code == 0 && f.starts == 1 && strstr(text, "up-result=stopped reason=user-stop connected=yes "));
+    signal_mode = 0;
+}
 int main(void) {
     /* The process under test ignores SIGPIPE itself; the fake sigaction does not. */
     (void)signal(SIGPIPE, SIG_IGN);
@@ -642,6 +714,11 @@ int main(void) {
     signal_mode = 4; run(USER_STOP);
     signal_mode = 0;
     signal_cancelled();
+    data_mode(10, USB_RECOVER_OK, "ok");
+    data_mode(11, USB_RECOVER_OK, "ok");
+    data_mode(10, USB_RECOVER_OPEN_ERROR, "open-error");
+    data_mode(10, USB_RECOVER_ERROR, "error");
+    for (int mode = 12; mode <= 19; mode++) data_mode_near_miss(mode);
     cleanup_mode(); lock_test(); cli();
     printf("lte-up checks=%u failures=%u (fake runner/store/link; no device, pppd or network)\n", checks, failures);
     return failures ? 1 : 0;

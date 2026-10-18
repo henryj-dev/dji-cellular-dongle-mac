@@ -546,6 +546,44 @@ static void signal_checks(void) {
     CHECK(f.writes == 1 && r.stop == STATUS_STOP_TIMEOUT && r.commands[1].values == 0 &&
           r.commands[STATUS_PROBE_CESQ_INDEX].sent == 0);
     CHECK(signal_probe_run(NULL, &r, NULL) == DJI_SYSTEM_ERROR);
+
+    /* Modem still in PPP data mode: four reads of HDLC frames, never our echo.
+     * The facts the pre-dial data-mode check uses: read-cap on CSQ, own echo 0,
+     * non-text bytes counted over every read. */
+    static const char frame[] = "\x7e\xff\x7d\x23\xc0\x21\x7d\x29\x7d\x21\x7d\x20\x7d\x28\x12\x34\x7e\r\n";
+    f = (struct fake){0}; b.context = &f;
+    for (unsigned k = 0; k < AT_PROBE_READ_LIMIT; k++) add_reply(&f, 0, frame, sizeof(frame) - 1);
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(f.writes == 1 && r.commands_sent == 1 && r.stop == STATUS_STOP_READ_CAP && r.stop_index == 1);
+    CHECK(r.commands[1].sent == 1 && r.commands[1].reads == AT_PROBE_READ_LIMIT && r.commands[1].own_echoes == 0);
+    CHECK(r.commands[1].binary == 3 * AT_PROBE_READ_LIMIT && r.commands[STATUS_PROBE_CESQ_INDEX].sent == 0);
+    /* Leftover AT text without our echo is not binary: the check stays off. */
+    f = (struct fake){0}; b.context = &f;
+    for (unsigned k = 0; k < AT_PROBE_READ_LIMIT; k++) ADD(&f, 0, "+CSQ: 20,99\r\n");
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(r.stop == STATUS_STOP_READ_CAP && r.commands[1].binary == 0 && r.commands[1].own_echoes == 0);
+    /* A late own echo after data bytes is counted, so it is never taken for data mode. */
+    f = (struct fake){0}; b.context = &f;
+    add_reply(&f, 0, frame, sizeof(frame) - 1);
+    ADD(&f, 0, "AT+CSQ\r\r\n+CSQ: 20,99\r\n");
+    ADD(&f, 0, "\r\n");
+    ADD(&f, 0, "\r\n");
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(r.stop == STATUS_STOP_READ_CAP && r.commands[1].own_echoes == 1 && r.commands[1].binary == 3);
+    /* A zero-length read after data bytes stops the run as zero-count; the counts stay. */
+    f = (struct fake){0}; b.context = &f;
+    add_reply(&f, 0, frame, sizeof(frame) - 1);
+    add_reply(&f, 0, "", 0);
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(r.stop == STATUS_STOP_ZERO_COUNT && r.stop_index == 1 && r.commands[1].reads == 1 &&
+          r.commands[1].binary == 3 && r.commands[1].own_echoes == 0);
+    /* A confirmed reply has one echo and no binary bytes. */
+    f = (struct fake){0}; b.context = &f;
+    ADD(&f, 0, "AT+CSQ\r\r\n+CSQ: 20,99\r\n\r\nOK\r\n");
+    ADD(&f, 1, "AT+CESQ\r\r\n+CESQ: 99,99,255,255,19,46\r\n\r\nOK\r\n");
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(r.commands[1].own_echoes == 1 && r.commands[1].binary == 0 &&
+          r.commands[STATUS_PROBE_CESQ_INDEX].own_echoes == 1);
 }
 
 int main(void) {

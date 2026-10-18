@@ -45,6 +45,14 @@
  * means the modem is stuck (e.g. still in data mode after a killed pppd). */
 #define UPD_FAST_FAIL_MS 5000u
 #define UPD_FAST_FAILS 3u
+/* A child that met the PPP data stream before dialing re-enumerates the dongle
+ * once and ends with reason=modem-reset. Two such ends without a connection or
+ * a real unplug in between: the reset does not help, so a replug is required.
+ * The dongle comes back from a re-enumeration as a new registry entry, possibly
+ * without a visible absence; that return is not a replug. Wait for it at most
+ * UPD_REENUM_MS, then the fixed minimum backoff while the modem boots. */
+#define UPD_MODEM_RESETS 2u
+#define UPD_REENUM_MS 15000u
 #define UPD_LINE 512u
 /* Optional status and control (see docs/ppp-design.md). The status file holds
  * fixed labels and validated numbers only; the socket takes four fixed commands. */
@@ -77,7 +85,10 @@ enum { UPD_PEER_DENIED, UPD_PEER_ROOT, UPD_PEER_ADMIN };
 /* OS boundary, replaced as a whole in tests. */
 struct upd_backend {
     void *context;
-    int (*devices)(void *context);                 /* matching dongles, -1 unknown */
+    /* Matching dongles, -1 unknown. *id is the registry entry ID when exactly
+     * one matches (0 if unreadable), else 0. A re-enumerated dongle comes back
+     * as a new registry entry with a new ID. */
+    int (*devices)(void *context, uint64_t *id);
     int (*path_ok)(void *context, const char *path);
     /* Spawns path with {path, mode}; *fd reads its stdout+stderr. */
     int (*spawn)(void *context, const char *path, const char *mode, pid_t *pid, int *fd);
@@ -126,8 +137,14 @@ struct upd {
     FILE *output;
     const char *log_path;  /* NULL: never reopened (tests) */
     volatile sig_atomic_t *stop;
-    unsigned backoff_ms, fast_fails;
+    unsigned backoff_ms, fast_fails, modem_resets;
     int last_devices, replug;
+    /* After a successful re-enumeration: no session until the dongle is back
+     * (gone then one again, or one with an ID other than reenum_id) or
+     * UPD_REENUM_MS passed; that absence keeps replug. Then reenum_settle holds
+     * the next session until settle_until, which commands do not cut. */
+    int reenum_wait, reenum_gone, reenum_settle;
+    uint64_t reenum_since, reenum_id, session_id, settle_until;
     struct upd_status s;
     /* Control: listener (-1 none); session_running while a --up child runs;
      * end_session asks that child to end (pause or reconnect); wake cuts a wait. */
@@ -135,6 +152,7 @@ struct upd {
 };
 struct upd_child {
     int ended, exit_code, signaled, connected, killed, forwarded, reap_error, blocked, spawn_error, session_error;
+    int modem_reset, reenumerated;
     int session, result_seen;
     uint64_t connected_ms, ended_ms, started_ms;
 };
@@ -415,6 +433,11 @@ static int upd_wait(struct upd *u, unsigned ms) {
 static void upd_line(struct upd *u, struct upd_child *k, const char *line) {
     if (!strncmp(line, "up=blocked ", 11)) k->blocked = 1;
     if (!strncmp(line, "up-result=ended reason=session-error ", 37)) k->session_error = 1;
+    char reason[16];
+    /* Any result word: a dirty cleanup does not hide the reset. */
+    if (!strncmp(line, "up-result=", 10) && upd_value(line, "reason", reason, sizeof(reason)) &&
+        !strcmp(reason, "modem-reset")) k->modem_reset = 1;
+    if (!strcmp(line, "up-recover=reenumerate result=ok")) k->reenumerated = 1;
     if (!strncmp(line, "up=connected", 12) && !k->connected) {
         k->connected = 1; k->connected_ms = u->b->now(u->b->context);
     }
@@ -546,9 +569,28 @@ static int upd_run(const struct upd_backend *b, FILE *output, const char *log_pa
      * keep a dead primary while no dongle is plugged in. */
     if (b->path_ok(b->context, UPD_CHILD_PATH)) upd_cleanup(&u);
     while (!*stop) {
-        int devices = b->devices(b->context);
+        uint64_t id = 0;
+        int devices = b->devices(b->context, &id);
         u.s.devices = devices < 0 ? -1 : devices;
-        if (devices == 0) u.replug = 0; /* the replug the modem needed */
+        if (u.reenum_wait) {
+            /* Back from the re-enumeration (not a replug): one dongle after an
+             * absence, or one under a new ID. Two (an overlap) or an unknown
+             * count decide nothing. */
+            uint64_t now = b->now(b->context);
+            if (devices == 0) u.reenum_gone = 1;
+            else if (devices == 1 && (u.reenum_gone || (id && u.reenum_id && id != u.reenum_id))) {
+                u.reenum_wait = 0;
+                upd_log(&u, "upd=reenumeration-back");
+            }
+            if (u.reenum_wait && (now == UINT64_MAX || now < u.reenum_since || now - u.reenum_since >= UPD_REENUM_MS)) {
+                u.reenum_wait = 0;
+                upd_log(&u, u.reenum_gone ? "upd=reenumeration-not-back" : "upd=reenumeration-unseen");
+            }
+        } else if (devices == 0) {
+            /* A real unplug: the replug the modem needed, and a fresh count. */
+            u.replug = u.reenum_settle = 0; u.modem_resets = 0;
+            u.settle_until = 0; u.s.retry_at = -1;
+        }
         if (u.paused) {
             /* No sessions; the waiting line is logged again after a resume. */
             u.last_devices = -2;
@@ -568,6 +610,27 @@ static int upd_run(const struct upd_backend *b, FILE *output, const char *log_pa
         }
         u.last_devices = devices;
         if (u.replug) { upd_state(&u, UPD_REPLUG); upd_wait(&u, UPD_POLL_MS); continue; }
+        if (u.reenum_wait) { upd_state(&u, UPD_WAITING); upd_wait(&u, UPD_POLL_MS); continue; }
+        if (u.reenum_settle) {
+            /* The modem boots again: a fixed minimum wait from its return. A
+             * reconnect or resume only cuts one slice; the rest still runs. */
+            uint64_t now = b->now(b->context);
+            if (now != UINT64_MAX && !u.settle_until && now <= UINT64_MAX - UPD_BACKOFF_MIN_MS) {
+                u.settle_until = now + UPD_BACKOFF_MIN_MS;
+                upd_log(&u, "upd=retry-in-ms=%u", UPD_BACKOFF_MIN_MS);
+                int64_t wall = upd_wall(&u);
+                u.s.retry_at = wall < 0 ? -1 : wall + (UPD_BACKOFF_MIN_MS + 999) / 1000;
+            }
+            if (now == UINT64_MAX || !u.settle_until || now >= u.settle_until) {
+                /* A failed clock cannot time the wait: go on rather than stall. */
+                u.reenum_settle = 0; u.settle_until = 0; u.s.retry_at = -1;
+            } else {
+                upd_state(&u, UPD_RETRY_WAIT);
+                (void)upd_wait(&u, (unsigned)(u.settle_until - now));
+                continue;
+            }
+        }
+        u.session_id = id; /* the dongle this session uses, for the return check */
         if (!b->path_ok(b->context, UPD_CHILD_PATH)) {
             upd_log(&u, "upd=blocked gate=child-path");
             upd_state(&u, UPD_BLOCKED);
@@ -586,6 +649,25 @@ static int upd_run(const struct upd_backend *b, FILE *output, const char *log_pa
         /* Leftover keys or a killed child: the cleanup command, once. */
         if (k.exit_code == 4 || k.killed || k.signaled || k.reap_error) { upd_state(&u, UPD_STOPPING); upd_cleanup(&u); }
         if (*stop) break;
+        /* A modem reset is not a fast failure and leaves the backoff as it is;
+         * only the fixed settle wait follows. */
+        if (k.modem_reset) {
+            u.modem_resets++;
+            u.end_session = u.reconnect = 0;
+            u.reenum_settle = 1; u.settle_until = 0;
+            if (k.reenumerated) {
+                u.reenum_wait = 1; u.reenum_gone = 0; u.reenum_id = u.session_id;
+                u.reenum_since = b->now(b->context);
+                /* A failed clock cannot bound the wait: do not wait for the absence. */
+                if (u.reenum_since == UINT64_MAX) u.reenum_wait = 0;
+            }
+            if (u.modem_resets >= UPD_MODEM_RESETS) {
+                upd_log(&u, "upd=replug-required");
+                u.replug = 1; u.modem_resets = 0; u.fast_fails = 0;
+            }
+            continue;
+        }
+        if (k.connected) u.modem_resets = 0; /* only a connection proves the modem works */
         if (k.connected && k.ended_ms >= k.connected_ms && k.ended_ms - k.connected_ms >= UPD_STABLE_MS)
             u.backoff_ms = UPD_BACKOFF_MIN_MS;
         int requested = u.end_session && k.forwarded, again = u.reconnect, late = 0;
@@ -600,7 +682,8 @@ static int upd_run(const struct upd_backend *b, FILE *output, const char *log_pa
              * failures, backoff growth) below; only the following wait is cut. */
             u.wake = late = 1;
         }
-        if (b->devices(b->context) == 0) {
+        uint64_t unused_id;
+        if (b->devices(b->context, &unused_id) == 0) {
             /* Unplugged (an unreadable count is not): next plug, no backoff. */
             u.backoff_ms = UPD_BACKOFF_MIN_MS; u.fast_fails = 0;
             continue;
@@ -633,8 +716,9 @@ static int upd_run(const struct upd_backend *b, FILE *output, const char *log_pa
 }
 
 /* ---- Native backend ---- */
-static int native_devices(void *context) {
+static int native_devices(void *context, uint64_t *id) {
     (void)context;
+    *id = 0;
     CFMutableDictionaryRef match = IOServiceMatching(kIOUSBDeviceClassName);
     if (!match) return -1;
     int32_t vid_value = UPD_VENDOR, pid_value = UPD_PRODUCT;
@@ -654,10 +738,15 @@ static int native_devices(void *context) {
     /* No match comes back as success with no iterator at all: zero dongles. */
     if (iterator == IO_OBJECT_NULL) return 0;
     int count = 0;
+    uint64_t first = 0;
     io_service_t next;
-    while ((next = IOIteratorNext(iterator)) != IO_OBJECT_NULL) { count++; IOObjectRelease(next); }
+    while ((next = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+        if (!count && IORegistryEntryGetRegistryEntryID(next, &first) != KERN_SUCCESS) first = 0;
+        count++; IOObjectRelease(next);
+    }
     int valid = IOIteratorIsValid(iterator);
     IOObjectRelease(iterator);
+    if (valid && count == 1) *id = first;
     return valid ? count : -1;
 }
 /* Every path component: root-owned, no group/other write, no symlink; the
