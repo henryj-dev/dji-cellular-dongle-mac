@@ -22,6 +22,7 @@ static struct {
     unsigned refs[256], device_refs, interface_refs, plugin_refs;
     int adb_child; /* 1: "adb", 2: "adbx", 3: two adb clients, 4: "a d b" */
     int adb_first; /* the foreign client is listed before ours */
+    unsigned child_scans; /* full registry validations (child scans) */
     unsigned enumeration, children, opens, closes, releases, adds, removes, writes;
     int plugin_created, pending, dispatch, queued, abort_inside, dispose_reentry;
     unsigned submits, callbacks, aborts, reentries;
@@ -77,7 +78,7 @@ static CFTypeRef fake_property(io_registry_entry_t entry, CFStringRef key, CFAll
 }
 static kern_return_t child_iterator(io_registry_entry_t entry, const io_name_t plane, io_iterator_t *iterator) {
     (void)entry; (void)plane;
-    sdk.children = 0; *iterator = 200; sdk.refs[200]++;
+    sdk.children = 0; sdk.child_scans++; *iterator = 200; sdk.refs[200]++;
     return KERN_SUCCESS;
 }
 static kern_return_t parent_entry(io_registry_entry_t entry, const io_name_t plane, io_registry_entry_t *parent) {
@@ -239,6 +240,9 @@ static void remove_source(CFRunLoopRef loop, CFRunLoopSourceRef source, CFString
 #define CFRunLoopRunInMode run_loop
 #define CFRunLoopAddSource add_source
 #define CFRunLoopRemoveSource remove_source
+/* Existing checks keep the former validate-every-transfer behaviour; the
+ * cached window is exercised separately in validate_interval_test. */
+#define PPP_USB_VALIDATE_INTERVAL_US 0u
 #include "../src/ppp_usb.c"
 
 /* Only the new implementation's fixed-start call is redirected. Production
@@ -490,6 +494,35 @@ static void adb_child_test(void) {
     c.user_client_id = 999; c.interface = NULL; CHECK(check_children(&c, 0) == DJI_BUSY);
     for (unsigned i = 0; i < 256; i++) CHECK(sdk.refs[i] == 0);
     sdk.adb_child = 0; sdk.adb_first = 0; sdk.plugin_created = 0;
+}
+/* A successful validation is reused for the adapter's window; zero means
+ * every transfer validates again; a failed validation never caches. */
+static void validate_interval_test(void) {
+    reset(); struct ppp_supervisor supervisor = {0};
+    struct ppp_peer peer = acquire(&supervisor);
+    unsigned char data[64];
+    for (unsigned pass = 0; pass < 2; pass++) {
+        live->validate_interval_us = pass ? 0 : 250000; live->validated_us = 0;
+        unsigned before = sdk.child_scans;
+        for (unsigned i = 0; i < 5; i++) {
+            CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_AGAIN);
+            queue_result((const unsigned char *)"x", 1, 0, 1);
+            struct offline_io got = peer.read(peer.context, data, sizeof(data));
+            CHECK(got.code == OFFLINE_IO_OK && got.count == 1);
+        }
+        CHECK(sdk.child_scans - before == (pass ? 5u : 1u));
+    }
+    /* Elapsed window: the next submit validates again. */
+    live->validate_interval_us = 250000; live->validated_us = 1;
+    unsigned before = sdk.child_scans;
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_AGAIN && sdk.child_scans == before + 1);
+    queue_result((const unsigned char *)"x", 1, 0, 1);
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_OK);
+    /* A failed validation clears the cache and the read fails closed. */
+    live->validated_us = 0; sdk.adb_child = 2; sdk.plugin_created = 1;
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_ERROR && !live->validated_us);
+    sdk.adb_child = 0;
+    dispose(&peer);
 }
 static void acquisition_test(void) {
     for (int i = 1; i <= 8; i++) {
@@ -1957,7 +1990,7 @@ int main(int argc, char **argv) {
     session_error_wait_test(argv[1]); session_usb_label_test(argv[1]); session_owner_test(argv[1]);
     runner_inputs_test(argv[1]); runner_install_restore_test(argv[1]);
     runner_wait_signal_test(argv[1]); runner_running_wait_test(argv[1]);
-    children_label_test(); adb_child_test(); acquisition_test(); completion_test(); usb_error_label_test(); cancellation_test(); wrong_owner_test(); probe_pointer_test();
+    children_label_test(); adb_child_test(); validate_interval_test(); acquisition_test(); completion_test(); usb_error_label_test(); cancellation_test(); wrong_owner_test(); probe_pointer_test();
     dispose_acquisition_test(); dispose_start_failure_test(argv[1]); dispose_completion_test();
     dispose_rejection_test(); dispose_close_test(); asynchronous_exec_failure_test();
     connect_hook_test(); observed_usb_test(argv[1], 0); observed_usb_test(argv[1], 1);

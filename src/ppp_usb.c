@@ -17,6 +17,11 @@ struct ppp_usb {
     unsigned char input[PPP_SUPERVISOR_BUFFER];
     uint32_t timeout, read_timeout; /* OUT and IN transfer timeouts, kept separate. */
     uint8_t in_pipe;
+    /* The last successful full validation and the pipes it proved; reused for
+     * validate_interval_us (the exclusive open still guards every transfer). */
+    uint64_t validated_us;
+    uint32_t validate_interval_us;
+    uint8_t valid_out, valid_in;
     uintptr_t count;
     IOReturn error, completion;
     unsigned submissions, callbacks, aborts;
@@ -25,6 +30,9 @@ struct ppp_usb {
     enum ppp_usb_error_kind error_kind;
     enum ppp_usb_error_site error_site;
 };
+#ifndef PPP_USB_VALIDATE_INTERVAL_US
+#define PPP_USB_VALIDATE_INTERVAL_US 250000u
+#endif
 static int owner(struct ppp_usb *a) {
     return a && pthread_equal(a->owner, pthread_self()) && a->loop == CFRunLoopGetCurrent();
 }
@@ -92,6 +100,23 @@ static uint64_t usb_now(void *context) {
     if (clock_gettime(CLOCK_MONOTONIC, &t)) return UINT64_MAX;
     return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
 }
+static uint64_t diag_us(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000; }
+/* Full registry validation costs about 1.4 ms on the test Mac; doing it for
+ * every PPP transfer capped the relay near 165 loops/s. Reuse a success for
+ * validate_interval_us; any failure forces the next call to validate again. */
+static int adapter_validate(struct ppp_usb *a, uint8_t *out, uint8_t *in) {
+    uint64_t now = diag_us();
+    if (a->validated_us && now >= a->validated_us && now - a->validated_us < a->validate_interval_us) {
+        *out = a->valid_out; *in = a->valid_in;
+        return DJI_OK;
+    }
+    int status = usb_session_validate(a->session, out, in);
+    uint64_t done = diag_us();
+    if (a->supervisor) a->supervisor->usb_validate_us += done - now;
+    if (status == DJI_OK) { a->validated_us = done ? done : 1; a->valid_out = *out; a->valid_in = *in; }
+    else a->validated_us = 0;
+    return status;
+}
 static struct offline_io usb_read(void *context, unsigned char *data, size_t capacity) {
     struct ppp_usb *a = context;
     if (!owner(a) || a->pumping || a->closed || a->stopping || !data || !capacity)
@@ -109,9 +134,13 @@ static struct offline_io usb_read(void *context, unsigned char *data, size_t cap
         a->count = 0;
         return (struct offline_io){OFFLINE_IO_OK, count};
     }
-    if (!a->pending) {
+    if (a->pending) {
+        /* Still outstanding after the pump: no data from the modem yet, or the
+         * completion was not dispatched in this pump (an upper bound only). */
+        if (a->supervisor) a->supervisor->usb_empty_polls++;
+    } else {
         uint8_t out = 0, in = 0;
-        if (usb_session_validate(a->session, &out, &in) != DJI_OK) {
+        if (adapter_validate(a, &out, &in) != DJI_OK) {
             remember_error(a, kIOReturnNoDevice, PPP_USB_ERROR_NONE, PPP_USB_SITE_VALIDATE);
             return (struct offline_io){OFFLINE_IO_ERROR, 0};
         }
@@ -138,7 +167,11 @@ static struct offline_io usb_write(void *context, const unsigned char *data, siz
         (a->supervisor->phase != PPP_SESSION && a->supervisor->phase != PPP_DRAIN) ||
         !data || !length || length > PPP_SUPERVISOR_BUFFER)
         return (struct offline_io){OFFLINE_IO_ERROR, 0};
-    int status = usb_session_write(a->session, data, (uint32_t)length, a->timeout);
+    uint64_t started = diag_us();
+    uint8_t out = 0, in = 0;
+    int status = adapter_validate(a, &out, &in);
+    if (status == DJI_OK) status = usb_session_write_validated(a->session, out, data, (uint32_t)length, a->timeout);
+    if (a->supervisor) a->supervisor->usb_write_us += diag_us() - started;
     if (status != DJI_OK) {
         remember_error(a, kIOReturnError, write_kind(status), PPP_USB_SITE_WRITE);
         return (struct offline_io){OFFLINE_IO_ERROR, 0};
@@ -225,6 +258,7 @@ int ppp_usb_acquire(io_service_t service, IOUSBDeviceInterface **device,
     if (status != DJI_OK) { free(a); return status; }
     a->timeout = timeout;
     a->read_timeout = read_timeout;
+    a->validate_interval_us = PPP_USB_VALIDATE_INTERVAL_US;
     a->owner = pthread_self();
     a->loop = CFRunLoopGetCurrent();
     CFRetain(a->loop);

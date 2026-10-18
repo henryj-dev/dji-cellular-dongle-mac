@@ -51,6 +51,7 @@ struct ppp_session_observation {
     enum offline_modem_result modem_result;
     unsigned modem_code;
     uint64_t child_output_bytes, usb_input_bytes, usb_input_reads, stderr_bytes, control_bytes;
+    uint64_t usb_empty_polls, usb_validate_us, usb_write_us;
     /* First USB adapter error label as kept by the supervisor; NONE when no
      * error was recorded after binding. Diagnostics only. */
     enum ppp_usb_error_kind usb_error_kind;

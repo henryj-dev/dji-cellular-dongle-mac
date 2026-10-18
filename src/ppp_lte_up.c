@@ -58,6 +58,7 @@ struct up_context {
     volatile sig_atomic_t stop;
     uint64_t start_ms, last_ms, last_sample_ms, stable_seen_ms, connected_ms, moved_bytes;
     unsigned busy_slices;
+    uint64_t loop_slices;
     unsigned seen_losses, seen_restores;
     int captured, start_valid, link_started, connected, user_stop, clock_error, release_error;
     int final_observed, reap_cleaned, output_error;
@@ -259,6 +260,7 @@ static int up_target(void *context, io_service_t service, IOUSBDeviceInterface *
     uint32_t wait = 10;
     for (;;) {
         int slice = ppp_runner_slice(c->runner, &c->stop, &wait, &c->status);
+        c->loop_slices++;
         if (slice < 0) { up_stop(c, "runner-call-error"); up_sleep(10); continue; }
         if (ppp_runner_observe(c->runner, &c->status, &c->child)) {
             up_stop(c, "observation-error");
@@ -440,7 +442,9 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         (void)snprintf(leftover, sizeof(leftover), "unproven");
     const struct ppp_nego_summary *n = &k->negotiation;
     char frames_rx[24] = "unproven", frames_tx[24] = "unproven", echo[24] = "unproven", reply[24] = "unproven";
-    char in_bytes[24] = "unproven", in_reads[24] = "unproven";
+    char in_bytes[24] = "unproven", in_reads[24] = "unproven", empty[24] = "unproven";
+    char validate_ms[24] = "unproven", write_ms[24] = "unproven", slices[24];
+    (void)snprintf(slices, sizeof(slices), "%llu", (unsigned long long)c.loop_slices);
     if (fresh) {
         (void)snprintf(frames_rx, sizeof(frames_rx), "%llu", (unsigned long long)n->frames[PPP_NEGO_PEER]);
         (void)snprintf(frames_tx, sizeof(frames_tx), "%llu", (unsigned long long)n->frames[PPP_NEGO_LOCAL]);
@@ -450,6 +454,9 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
             (unsigned long)n->codes[PPP_NEGO_LOCAL][PPP_NEGO_LCP][10]);
         (void)snprintf(in_bytes, sizeof(in_bytes), "%llu", (unsigned long long)k->usb_input_bytes);
         (void)snprintf(in_reads, sizeof(in_reads), "%llu", (unsigned long long)k->usb_input_reads);
+        (void)snprintf(empty, sizeof(empty), "%llu", (unsigned long long)k->usb_empty_polls);
+        (void)snprintf(validate_ms, sizeof(validate_ms), "%llu", (unsigned long long)(k->usb_validate_us / 1000));
+        (void)snprintf(write_ms, sizeof(write_ms), "%llu", (unsigned long long)(k->usb_write_us / 1000));
     }
     char resets[16] = "none", losses[16] = "none", restores[16] = "none";
     if (c.link_started) {
@@ -468,7 +475,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         " sc-pre=%s pppd-leftover=%s sc-reap=%s sc-post=%s primary-restored=%s"
         " local=%s session-error=%s cleanup=%s clock=%s child=%s child-exit=%s term-count=%u kill-count=%u"
         " callback-quiet=%s handlers=%s supervisor-error=%s usb-error=%s usb-error-site=%s"
-        " ppp-lcp=%s ppp-ipcp=%s ppp-terminate=%s ppp-lcp-echo=%s ppp-lcp-echo-reply=%s ppp-frames-rx=%s ppp-frames-tx=%s usb-in-bytes=%s usb-in-reads=%s"
+        " ppp-lcp=%s ppp-ipcp=%s ppp-terminate=%s ppp-lcp-echo=%s ppp-lcp-echo-reply=%s ppp-frames-rx=%s ppp-frames-tx=%s usb-in-bytes=%s usb-in-reads=%s usb-in-empty-polls=%s usb-validate-ms=%s usb-write-ms=%s loop-slices=%s"
         " remote-termination=unproven next-run-cleanup=%s %s\n",
         result == 0 ? "stopped" : result == 3 ? "ended" : "cleanup-required", c.reason,
         c.connected ? "yes" : "no", connected_ms, ready, stable, resets, losses, restores,
@@ -486,7 +493,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         fresh ? UP_NAME(up_usb_sites, k->usb_error_site) : "unproven",
         fresh ? UP_NAME(up_lcp, n->lcp) : "unproven", fresh ? UP_NAME(up_ncp, n->ipcp) : "unproven",
         fresh ? UP_NAME(up_terminate, n->terminate) : "unproven",
-        echo, reply, frames_rx, frames_tx, in_bytes, in_reads, clean ? "not-required" : "required", diagnostic);
+        echo, reply, frames_rx, frames_tx, in_bytes, in_reads, empty, validate_ms, write_ms, slices, clean ? "not-required" : "required", diagnostic);
     (void)discovery;
     /* An unproven cleanup outranks a lost output line. */
     return result == 4 ? 4 : c.output_error ? 1 : result;

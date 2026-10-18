@@ -84,8 +84,13 @@ struct ppp_supervisor {
      * bytes of completed USB reads, counted at read time whether or not the
      * queue/stream later accepts them. */
     uint64_t child_output_bytes, usb_input_bytes;
-    /* Diagnostics only: completed USB reads counted with usb_input_bytes. */
-    uint64_t usb_input_reads;
+    /* Diagnostics only: completed USB reads counted with usb_input_bytes;
+     * reads polled while still outstanding (no data yet or not dispatched in
+     * that pump: an upper bound of modem waiting); microseconds spent in full
+     * (uncached) validations and in whole USB write calls (write time also
+     * includes any validation it triggered).
+     * Written by the bound adapter, never used for any decision. */
+    uint64_t usb_input_reads, usb_empty_polls, usb_validate_us, usb_write_us;
     /* Diagnostics only, never used for any decision: the first USB adapter
      * error label, written by the bound adapter. Kept here because the adapter
      * is freed before the supervisor and must not be read afterwards. */

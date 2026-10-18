@@ -472,6 +472,11 @@ static void run(enum scenario s) {
         const char *b = strstr(text, " usb-in-bytes="), *r = strstr(text, " usb-in-reads=");
         CHECK(b && r && sscanf(b, " usb-in-bytes=%llu", &in_bytes) == 1 && sscanf(r, " usb-in-reads=%llu", &in_reads) == 1);
         CHECK(in_reads == f.child.usb_input_reads && in_bytes == 100 * in_reads && in_reads > 0);
+        /* Diagnostic timing labels are present; the loop count is the fixture's slices. */
+        unsigned long long loop = 0;
+        const char *l = strstr(text, " loop-slices=");
+        CHECK(strstr(text, " usb-in-empty-polls=0 usb-validate-ms=0 usb-write-ms=0 loop-slices=") && l &&
+              sscanf(l, " loop-slices=%llu", &loop) == 1 && loop == f.slices);
         /* Each movement holds 1 ms for exactly 100 slices, then 10 ms again. */
         CHECK(f.waits_short > 0 && f.waits_long > 0 && f.max_short_run == 100 && !f.odd_runs);
     }

@@ -401,6 +401,14 @@ int usb_session_validate(struct usb_session *s, uint8_t *out, uint8_t *in) {
     if (!s || !out || !in || !s->opened || s->closed) return DJI_SYSTEM_ERROR;
     return probe_validate(&s->context, AT_PROBE_INTERFACE, 1, out, in);
 }
+int usb_session_write_validated(struct usb_session *s, uint8_t out, const uint8_t *data, uint32_t size,
+                                uint32_t timeout) {
+    if (!s || !data || !size || size > 4096 || !timeout || !out || !s->opened || s->closed)
+        return DJI_SYSTEM_ERROR;
+    uint8_t copy[4096];
+    memcpy(copy, data, size);
+    return sdk_write(&s->context, out, copy, size, timeout);
+}
 int usb_session_write(struct usb_session *s, const uint8_t *data, uint32_t size, uint32_t timeout) {
     /* The adapter separately checks the bound supervisor gate; this policy does
      * not weaken the source-pointer allowlist of write_bulk. */
