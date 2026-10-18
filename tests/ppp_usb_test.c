@@ -1209,6 +1209,13 @@ static void probe_pointer_test(void) {
     uint32_t size = 0;
     const uint8_t *fixed = at_probe_command_bytes(AT_PROBE_COMMAND_AT, &size);
     CHECK(write_bulk(&session->context, 3, fixed, size, 100) == DJI_OK && sdk.writes == 1);
+    /* Every entry of the fixed table passes the real writer (a missing length once
+     * dropped AT+CESQ on the device while fake-transport tests passed). */
+    for (int command = AT_PROBE_COMMAND_AT; command <= AT_PROBE_COMMAND_CESQ; command++) {
+        unsigned before = sdk.writes;
+        fixed = at_probe_command_bytes((enum at_probe_command)command, &size);
+        CHECK(fixed && write_bulk(&session->context, 3, fixed, size, 100) == DJI_OK && sdk.writes == before + 1);
+    }
     CHECK(usb_session_close(session) == DJI_OK); usb_session_release(session); balanced();
 }
 static void connect_hook_test(void) {

@@ -356,10 +356,10 @@ static int sdk_write(struct usb_context *c, uint8_t pipe, uint8_t *copy,
 static int write_bulk(void *context, uint8_t pipe, const uint8_t *bytes, uint32_t size, uint32_t timeout) {
     struct usb_context *c = context;
     if (cancelled(c)) return DJI_CANCELLED;
-    /* Only the fixed source constant lengths (3, 4, 7, 9, 10, 12) and only buffers that are
+    /* Only the fixed source constant lengths (3, 4, 7, 8, 9, 10, 12) and only buffers that are
      * exactly an entry of the source command table are accepted. */
     uint8_t copy[12];
-    if ((size != 3 && size != 4 && size != 7 && size != 9 && size != 10 && size != 12) ||
+    if ((size != 3 && size != 4 && size != 7 && size != 8 && size != 9 && size != 10 && size != 12) ||
         !at_probe_is_fixed_command(bytes, size) || c->current != c->services[AT_PROBE_INTERFACE])
         return DJI_INVALID_DESCRIPTOR;
     memcpy(copy, bytes, size);
