@@ -12,6 +12,9 @@
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<!-- The relay moves every packet of the Mac's traffic: no background throttling. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<!-- Stop budget: up to 60 s for the session, 5 s output drain, one cleanup run (30 s). -->
