@@ -78,6 +78,26 @@ sudo make uninstall
 
 데몬은 실행할 때마다 자식 실행 파일과 그 위 모든 디렉터리가 root 소유이고 다른 사용자가 쓸 수 없는지 확인합니다.
 
+## 상태 확인과 제어 (선택)
+
+데몬은 작은 상태 파일과 제어 소켓을 둡니다. 명령줄 도구 `dji-dongle`로 상태를 보고 제어합니다.
+
+```sh
+make agent                 # build/dji-dongle 빌드
+sudo make install-agent    # /usr/local/bin/dji-dongle 설치
+dji-dongle status          # 상태, 연결 시간, 연결 때 신호
+dji-dongle watch           # 위 내용과 실시간 RX/TX 속도를 1초마다(Ctrl+C로 끝)
+dji-dongle pause           # 세션을 끝내고 resume 전까지 연결하지 않음(관리자 계정)
+dji-dongle resume
+dji-dongle reconnect       # 세션을 끝내고 바로 새로 연결
+```
+
+- `status`와 `watch`는 `/var/run/dji-cellular-dongle-mac/status.json`을 읽습니다. 누구나 읽을 수 있고, 고정 라벨과 숫자만 들어 있습니다(IP 주소·식별값 없음). `dji-dongle status --json`은 이 파일을 그대로 출력합니다. 데몬은 상태가 바뀔 때마다 파일을 다시 쓰고, 정상 종료할 때 지웁니다.
+- `pause`, `resume`, `reconnect`는 root 전용 상태 디렉터리 안의 `/var/run/dji-cellular-dongle-mac/control.sock`(root:admin, 0660)으로 보냅니다. 데몬은 호출한 사용자도 확인합니다. root이거나 admin 그룹 구성원이어야 하고, 아니면 `need an admin account`가 나옵니다.
+- pause는 `/Library/Application Support/dji-cellular-dongle-mac/paused`에 저장돼 재시작 뒤에도 유지됩니다. 실행 중인 세션은 정지 요청과 같은 방법으로 끝냅니다(최대 60초). 시작할 때 이 파일이나 디렉터리를 검증하지 못하면 예상치 못한 데이터 사용을 막으려고 pause 상태로 시작하고 `upd=pause-file-blocked paused=yes`를 남깁니다. `resume`은 필요한 재연결(replug)을 없애지 않으니, 동글을 뺐다가 다시 꽂아야 합니다.
+- 받아들인 명령은 로그에 `upd=control command=... uid-class=root|admin`으로 남습니다.
+- `sudo make uninstall-agent`로 도구를 지웁니다. `sudo make uninstall`은 소켓, 상태 파일, 저장된 pause도 지웁니다.
+
 ## 지금까지 확인한 것
 
 시험한 맥(Apple Silicon, macOS 26.6)에 데몬을 설치하고 확인한 결과입니다.

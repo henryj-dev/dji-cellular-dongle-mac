@@ -9,7 +9,7 @@ OFFLINE_LOG_DIR ?= build
 HELPERDIR ?= /Library/PrivilegedHelperTools/dji-cellular-dongle-mac
 UPD_DEFINES := -DUPD_CHILD_PATH='"$(HELPERDIR)/ppp_lte_up"'
 
-.PHONY: all test test-sanitize verify-offline install install-files uninstall require-root clean-daemon
+.PHONY: all test test-sanitize verify-offline install install-files uninstall require-root clean-daemon agent install-agent uninstall-agent
 
 all: build/dji-lte-mac build/ppp_lte_up build/ppp_lte_upd build/install/dji-cellular-dongle-mac.plist
 
@@ -152,7 +152,7 @@ build/ppp_usb_test: tests/ppp_usb_test.c $(PPP_USB_SOURCES) $(PPP_USB_HEADERS) |
 build/ppp_usb_test_sanitize: tests/ppp_usb_test.c $(PPP_USB_SOURCES) $(PPP_USB_HEADERS) | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) tests/ppp_usb_test.c src/observer_policy.c src/payload_analysis.c src/at_probe.c src/status_probe.c src/descriptor.c src/ppp_supervisor.c src/ppp_child.c src/offline_stream.c src/ppp_launch.c src/ppp_negotiation.c src/ppp_auth_probe.c $(FRAMEWORKS) -o $@
 
-test: build/ppp_lte_upd_test build/ppp_lte_up_test build/ppp_lte_up_integration_test build/ppp_lte_link_test build/ppp_lte_service_test build/ppp_lte_network_test build/ppp_lte_once_test build/ppp_lte_once_integration_test build/ppp_auth_probe_test build/ppp_auth_trial_test build/ppp_trial_observer_test build/ppp_local_check_test build/ppp_launch_test build/ppp_usb_test build/ppp_child_fixture build/ppp_child_test build/ppp_supervisor_test build/ppp_negotiation_test build/offline_stream_test build/descriptor_parser_test build/observer_test build/payload_analysis_test build/reconnect_test build/observer_signal_test build/at_probe_test build/ati_probe_test build/status_probe_test build/pdp_probe_test build/data_support_probe_test
+test: build/ppp_lte_upd_test build/dji_dongle_test build/ppp_lte_up_test build/ppp_lte_up_integration_test build/ppp_lte_link_test build/ppp_lte_service_test build/ppp_lte_network_test build/ppp_lte_once_test build/ppp_lte_once_integration_test build/ppp_auth_probe_test build/ppp_auth_trial_test build/ppp_trial_observer_test build/ppp_local_check_test build/ppp_launch_test build/ppp_usb_test build/ppp_child_fixture build/ppp_child_test build/ppp_supervisor_test build/ppp_negotiation_test build/offline_stream_test build/descriptor_parser_test build/observer_test build/payload_analysis_test build/reconnect_test build/observer_signal_test build/at_probe_test build/ati_probe_test build/status_probe_test build/pdp_probe_test build/data_support_probe_test
 	./build/descriptor_parser_test $(FIXTURE)
 	./build/observer_test $(FIXTURE)
 	./build/payload_analysis_test
@@ -170,6 +170,7 @@ test: build/ppp_lte_upd_test build/ppp_lte_up_test build/ppp_lte_up_integration_
 	./build/ppp_auth_probe_test
 	./build/ppp_auth_trial_test
 	./build/ppp_lte_upd_test
+	./build/dji_dongle_test
 	./build/ppp_lte_up_test
 	./build/ppp_lte_up_integration_test
 	./build/ppp_lte_link_test
@@ -182,7 +183,7 @@ test: build/ppp_lte_upd_test build/ppp_lte_up_test build/ppp_lte_up_integration_
 	./build/ppp_supervisor_test $(abspath build/ppp_child_fixture)
 	./build/ppp_usb_test $(abspath build/ppp_child_fixture) $(FIXTURE)
 
-test-sanitize: build/ppp_lte_upd_test_sanitize build/ppp_lte_up_test_sanitize build/ppp_lte_up_integration_test_sanitize build/ppp_lte_link_test_sanitize build/ppp_lte_service_test_sanitize build/ppp_lte_network_test_sanitize build/ppp_lte_once_test_sanitize build/ppp_lte_once_integration_test_sanitize build/ppp_auth_probe_test_sanitize build/ppp_auth_trial_test_sanitize build/ppp_trial_observer_test_sanitize build/ppp_local_check_test_sanitize build/ppp_launch_test_sanitize build/ppp_usb_test_sanitize build/ppp_child_fixture_sanitize build/ppp_child_test_sanitize build/ppp_supervisor_test_sanitize build/ppp_negotiation_test_sanitize build/offline_stream_test_sanitize build/descriptor_parser_test_sanitize build/observer_test_sanitize build/payload_analysis_test_sanitize build/reconnect_test_sanitize build/observer_signal_test_sanitize build/at_probe_test_sanitize build/ati_probe_test_sanitize build/status_probe_test_sanitize build/pdp_probe_test_sanitize build/data_support_probe_test_sanitize
+test-sanitize: build/ppp_lte_upd_test_sanitize build/dji_dongle_test_sanitize build/ppp_lte_up_test_sanitize build/ppp_lte_up_integration_test_sanitize build/ppp_lte_link_test_sanitize build/ppp_lte_service_test_sanitize build/ppp_lte_network_test_sanitize build/ppp_lte_once_test_sanitize build/ppp_lte_once_integration_test_sanitize build/ppp_auth_probe_test_sanitize build/ppp_auth_trial_test_sanitize build/ppp_trial_observer_test_sanitize build/ppp_local_check_test_sanitize build/ppp_launch_test_sanitize build/ppp_usb_test_sanitize build/ppp_child_fixture_sanitize build/ppp_child_test_sanitize build/ppp_supervisor_test_sanitize build/ppp_negotiation_test_sanitize build/offline_stream_test_sanitize build/descriptor_parser_test_sanitize build/observer_test_sanitize build/payload_analysis_test_sanitize build/reconnect_test_sanitize build/observer_signal_test_sanitize build/at_probe_test_sanitize build/ati_probe_test_sanitize build/status_probe_test_sanitize build/pdp_probe_test_sanitize build/data_support_probe_test_sanitize
 	./build/descriptor_parser_test_sanitize $(FIXTURE)
 	./build/observer_test_sanitize $(FIXTURE)
 	./build/payload_analysis_test_sanitize
@@ -200,6 +201,7 @@ test-sanitize: build/ppp_lte_upd_test_sanitize build/ppp_lte_up_test_sanitize bu
 	./build/ppp_auth_probe_test_sanitize
 	./build/ppp_auth_trial_test_sanitize
 	./build/ppp_lte_upd_test_sanitize
+	./build/dji_dongle_test_sanitize
 	./build/ppp_lte_up_test_sanitize
 	./build/ppp_lte_up_integration_test_sanitize
 	./build/ppp_lte_link_test_sanitize
@@ -342,10 +344,30 @@ build/ppp_lte_upd_test: tests/ppp_lte_upd_test.c src/ppp_lte_upd.c | build
 build/ppp_lte_upd_test_sanitize: tests/ppp_lte_upd_test.c src/ppp_lte_upd.c | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) $< $(FRAMEWORKS) -o $@
 
+# ---- Optional status/control agent (user side). See README "Status and control". ----
+# AGENT_TARGETS is the hook for further agent pieces (e.g. a menu bar app):
+# append their build targets here and `make agent` builds them too.
+AGENT_TARGETS := build/dji-dongle
+AGENT_BINDIR ?= /usr/local/bin
+
+agent: $(AGENT_TARGETS)
+
+build/dji-dongle: src/dji_dongle.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+build/dji_dongle_test: tests/dji_dongle_test.c src/dji_dongle.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+build/dji_dongle_test_sanitize: tests/dji_dongle_test.c src/dji_dongle.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) $< -o $@
+
 # ---- Install as a launchd daemon (root). See README "Install". ----
 LAUNCHD_LABEL := io.github.henryj-dev.dji-cellular-dongle-mac
 LAUNCHD_PLIST := /Library/LaunchDaemons/$(LAUNCHD_LABEL).plist
 NEWSYSLOG_CONF := /etc/newsyslog.d/dji-cellular-dongle-mac.conf
+# Created by the daemon at run time (status, control socket, saved pause).
+UPD_STATUS_DIR := /var/run/dji-cellular-dongle-mac
+UPD_PAUSE_DIR := /Library/Application Support/dji-cellular-dongle-mac
 DESTDIR ?=
 INSTALL_OWNER ?= -o root -g wheel
 
@@ -389,7 +411,20 @@ uninstall: require-root
 	-test -x $(HELPERDIR)/ppp_lte_up && $(HELPERDIR)/ppp_lte_up --cleanup
 	rm -f $(LAUNCHD_PLIST) $(NEWSYSLOG_CONF) $(HELPERDIR)/ppp_lte_up $(HELPERDIR)/ppp_lte_upd
 	-rmdir $(HELPERDIR)
+	rm -f $(UPD_STATUS_DIR)/control.sock $(UPD_STATUS_DIR)/status.json $(UPD_STATUS_DIR)/status.json.tmp '$(UPD_PAUSE_DIR)/paused'
+	-rmdir $(UPD_STATUS_DIR) '$(UPD_PAUSE_DIR)'
 	@echo "dji-cellular-dongle-mac removed. The log /var/log/dji-cellular-dongle-mac.log is kept."
+
+# The CLI only; the daemon (with status and control) comes from `make install`.
+install-agent: require-root
+	@test -f build/dji-dongle || { echo "missing build/dji-dongle: run 'make agent' (without sudo) first"; exit 1; }
+	@# An existing bindir is left as is (Homebrew owns /usr/local/bin on Intel Macs).
+	test -d $(DESTDIR)$(AGENT_BINDIR) || install -d $(INSTALL_OWNER) -m 0755 $(DESTDIR)$(AGENT_BINDIR)
+	install -S $(INSTALL_OWNER) -m 0755 build/dji-dongle $(DESTDIR)$(AGENT_BINDIR)/dji-dongle
+	@echo "dji-dongle installed. Try: dji-dongle status   Remove: sudo make uninstall-agent"
+
+uninstall-agent: require-root
+	rm -f $(DESTDIR)$(AGENT_BINDIR)/dji-dongle
 
 clean-daemon:
 	rm -f build/ppp_lte_upd build/helperdir.stamp build/install/dji-cellular-dongle-mac.plist
@@ -398,7 +433,7 @@ FORCE:
 
 # Full offline build, SDK, test, sanitizer and CLI/API checks;
 # no real discovery, wait-reconnect, observation or probe calls.
-verify-offline: all ppp-usb-sdk ppp-auth-sdk ppp-lte-sdk build/ppp_lte_once build/ppp_lte_up build/ppp_lte_upd build/ppp_auth_trial build/ppp_local_check test test-sanitize
+verify-offline: all agent ppp-usb-sdk ppp-auth-sdk ppp-lte-sdk build/ppp_lte_once build/ppp_lte_up build/ppp_lte_upd build/ppp_auth_trial build/ppp_local_check test test-sanitize
 	mkdir -p $(OFFLINE_LOG_DIR)
 	./build/ppp_lte_once --help > $(OFFLINE_LOG_DIR)/lte-once-help.stdout
 	@./build/ppp_lte_once --lte-once > $(OFFLINE_LOG_DIR)/lte-once-invalid.stdout 2> $(OFFLINE_LOG_DIR)/lte-once-invalid.stderr; rc=$$?; test "$$rc" -eq 2
@@ -504,6 +539,16 @@ verify-offline: all ppp-usb-sdk ppp-auth-sdk ppp-lte-sdk build/ppp_lte_once buil
 	! grep -nE 'SCDynamic|SCPreferences|WritePipe|ReadPipe|USBInterfaceOpen|USBDeviceOpen|system\(|popen|execv|execl' src/ppp_lte_upd.c
 	test "$$(grep -c 'posix_spawn(pid, path' src/ppp_lte_upd.c)" -eq 1
 	test "$$(grep -c 'u->b->spawn(u->b->context, UPD_CHILD_PATH, mode' src/ppp_lte_upd.c)" -eq 1
+	./build/dji-dongle --help > $(OFFLINE_LOG_DIR)/dji-dongle-help.stdout
+	grep -q -- 'reconnect' $(OFFLINE_LOG_DIR)/dji-dongle-help.stdout
+	@./build/dji-dongle stop > $(OFFLINE_LOG_DIR)/dji-dongle-invalid.stdout 2> $(OFFLINE_LOG_DIR)/dji-dongle-invalid.stderr; rc=$$?; test "$$rc" -eq 2
+	@./build/dji-dongle pause extra > $(OFFLINE_LOG_DIR)/dji-dongle-extra.stdout 2> $(OFFLINE_LOG_DIR)/dji-dongle-extra.stderr; rc=$$?; test "$$rc" -eq 2
+	! grep -nE 'TODO|FIXME|HACK|test\.(skip|only)|\.skip\(|\.only\(|placeholder' src/ppp_lte_upd.c src/dji_dongle.c tests/ppp_lte_upd_test.c tests/dji_dongle_test.c
+	test "$$(grep -l 'control\.sock' src/*.c src/*.h | tr '\n' ' ')" = "src/dji_dongle.c src/ppp_lte_upd.c "
+	! grep -nE '\b(unlink|rename|chown|chmod|mkdir)\(' src/ppp_lte_upd.c | grep -v 'mkdir(path, 0700)'
+	! grep -n 'dji-cellular-dongle-mac.sock' src/*.c src/*.h README.md README.ko.md docs/ppp-design.md
+	! grep -nE 'inet_ntop|inet_ntoa|getnameinfo|ifa_netmask|ifa_dstaddr|system\(|popen|execv|execl|posix_spawn|setuid|IOKit|SCDynamic' src/dji_dongle.c
+	test "$$(grep -c 'upd_commands\[\] = {"status", "pause", "resume", "reconnect"}' src/ppp_lte_upd.c)" -eq 1
 	test "$$(grep -c 'SCDynamicStoreRemoveValue' src/ppp_lte_service.c)" -eq 1
 	test "$$(grep -l 'SCDynamicStoreRemoveValue' src/*.c src/*.h)" = "src/ppp_lte_service.c"
 	! grep -nE 'SCDynamicStoreSetValue|SCDynamicStoreSetMultiple|SCDynamicStoreAddValue|SCDynamicStoreAddTemporaryValue|SCDynamicStoreNotifyValue|SCPreferences|SCNetworkSet' src/*.c src/*.h

@@ -75,6 +75,26 @@ sudo make uninstall
 
 The daemon checks that its child binary and every directory above it are root-owned and not writable by others before each run.
 
+## Status and control (optional)
+
+The daemon keeps a small status file and a control socket. The `dji-dongle` command-line tool reads and drives them:
+
+```sh
+make agent                 # builds build/dji-dongle
+sudo make install-agent    # installs /usr/local/bin/dji-dongle
+dji-dongle status          # state, connection time, signal at connect
+dji-dongle watch           # the same plus live RX/TX rate every second (Ctrl+C to quit)
+dji-dongle pause           # end the session and stay off until resume (admin account)
+dji-dongle resume
+dji-dongle reconnect       # end the session and start a fresh one at once
+```
+
+- `status` and `watch` read `/var/run/dji-cellular-dongle-mac/status.json` (readable by everyone; fixed labels and numbers only, no IP addresses or identifiers). `dji-dongle status --json` prints it as is. The daemon rewrites it on every state change and removes it when it stops cleanly.
+- `pause`, `resume` and `reconnect` go through `/var/run/dji-cellular-dongle-mac/control.sock` (root:admin, 0660, inside the root-only status directory). The daemon also checks the caller: root or a member of the admin group. Others get `need an admin account`.
+- A pause is saved in `/Library/Application Support/dji-cellular-dongle-mac/paused` and survives restarts. It ends a running session the same way a stop does (up to 60 s). If that file or its directory cannot be verified at start, the daemon starts paused (no unexpected data use) and logs `upd=pause-file-blocked paused=yes`. `resume` does not clear a required replug: unplug and plug the dongle in again.
+- Each accepted command is logged as `upd=control command=... uid-class=root|admin`.
+- `sudo make uninstall-agent` removes the tool. `sudo make uninstall` also removes the socket, the status file and a saved pause.
+
 ## Tested so far
 
 On the test Mac (Apple Silicon, macOS 26.6) with the daemon installed:
