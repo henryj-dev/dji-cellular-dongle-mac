@@ -191,6 +191,7 @@ static void read_usb(struct ppp_supervisor *s) {
         s->usb_length = result.count;
         s->usb_offset = 0;
         s->usb_input_bytes += result.count;
+        s->usb_input_reads++;
         if (clock_check(s)) return; /* No new writes after a late callback. */
     }
     if (!s->usb_length) return;

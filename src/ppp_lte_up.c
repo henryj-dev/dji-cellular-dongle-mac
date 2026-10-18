@@ -40,6 +40,7 @@ _Static_assert(UP_ECHO_INTERVAL_MS * (UP_ECHO_FAILURE + 1) < UP_READ_TIMEOUT_MS,
 #define UP_SAMPLE_MS 250u
 #define UP_CONNECTED_SAMPLE_MS 1000u
 #define UP_RESTORE_POLLS 20u
+#define UP_BUSY_SLICES 100u
 
 enum up_mode { UP_HELP, UP_RUN, UP_CLEANUP };
 struct up_context {
@@ -56,6 +57,7 @@ struct up_context {
     FILE *output;
     volatile sig_atomic_t stop;
     uint64_t start_ms, last_ms, last_sample_ms, stable_seen_ms, connected_ms, moved_bytes;
+    unsigned busy_slices;
     unsigned seen_losses, seen_restores;
     int captured, start_valid, link_started, connected, user_stop, clock_error, release_error;
     int final_observed, reap_cleaned, output_error;
@@ -263,9 +265,13 @@ static int up_target(void *context, io_service_t service, IOUSBDeviceInterface *
             if (slice == 1) break;
             continue;
         }
-        /* Busy traffic gets the shortest wait; an idle link the default one. */
+        /* Busy traffic keeps the shortest wait for the next UP_BUSY_SLICES slices
+         * (about 100 ms): one USB read takes two slices (submit, then collect),
+         * so a 1 ms/10 ms alternation would idle the read path most of the time. */
         uint64_t moved = c->child.child_output_bytes + c->child.usb_input_bytes;
-        wait = moved != c->moved_bytes ? 1 : 10;
+        if (moved != c->moved_bytes) c->busy_slices = UP_BUSY_SLICES;
+        wait = c->busy_slices ? 1 : 10;
+        if (c->busy_slices) c->busy_slices--;
         c->moved_bytes = moved;
         if (c->child.started && !c->captured) {
             c->captured = 1;
@@ -434,6 +440,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         (void)snprintf(leftover, sizeof(leftover), "unproven");
     const struct ppp_nego_summary *n = &k->negotiation;
     char frames_rx[24] = "unproven", frames_tx[24] = "unproven", echo[24] = "unproven", reply[24] = "unproven";
+    char in_bytes[24] = "unproven", in_reads[24] = "unproven";
     if (fresh) {
         (void)snprintf(frames_rx, sizeof(frames_rx), "%llu", (unsigned long long)n->frames[PPP_NEGO_PEER]);
         (void)snprintf(frames_tx, sizeof(frames_tx), "%llu", (unsigned long long)n->frames[PPP_NEGO_LOCAL]);
@@ -441,6 +448,8 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
             (unsigned long)n->codes[PPP_NEGO_LOCAL][PPP_NEGO_LCP][9]);
         (void)snprintf(reply, sizeof(reply), "%lu/%lu", (unsigned long)n->codes[PPP_NEGO_PEER][PPP_NEGO_LCP][10],
             (unsigned long)n->codes[PPP_NEGO_LOCAL][PPP_NEGO_LCP][10]);
+        (void)snprintf(in_bytes, sizeof(in_bytes), "%llu", (unsigned long long)k->usb_input_bytes);
+        (void)snprintf(in_reads, sizeof(in_reads), "%llu", (unsigned long long)k->usb_input_reads);
     }
     char resets[16] = "none", losses[16] = "none", restores[16] = "none";
     if (c.link_started) {
@@ -459,7 +468,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         " sc-pre=%s pppd-leftover=%s sc-reap=%s sc-post=%s primary-restored=%s"
         " local=%s session-error=%s cleanup=%s clock=%s child=%s child-exit=%s term-count=%u kill-count=%u"
         " callback-quiet=%s handlers=%s supervisor-error=%s usb-error=%s usb-error-site=%s"
-        " ppp-lcp=%s ppp-ipcp=%s ppp-terminate=%s ppp-lcp-echo=%s ppp-lcp-echo-reply=%s ppp-frames-rx=%s ppp-frames-tx=%s"
+        " ppp-lcp=%s ppp-ipcp=%s ppp-terminate=%s ppp-lcp-echo=%s ppp-lcp-echo-reply=%s ppp-frames-rx=%s ppp-frames-tx=%s usb-in-bytes=%s usb-in-reads=%s"
         " remote-termination=unproven next-run-cleanup=%s %s\n",
         result == 0 ? "stopped" : result == 3 ? "ended" : "cleanup-required", c.reason,
         c.connected ? "yes" : "no", connected_ms, ready, stable, resets, losses, restores,
@@ -477,7 +486,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         fresh ? UP_NAME(up_usb_sites, k->usb_error_site) : "unproven",
         fresh ? UP_NAME(up_lcp, n->lcp) : "unproven", fresh ? UP_NAME(up_ncp, n->ipcp) : "unproven",
         fresh ? UP_NAME(up_terminate, n->terminate) : "unproven",
-        echo, reply, frames_rx, frames_tx, clean ? "not-required" : "required", diagnostic);
+        echo, reply, frames_rx, frames_tx, in_bytes, in_reads, clean ? "not-required" : "required", diagnostic);
     (void)discovery;
     /* An unproven cleanup outranks a lost output line. */
     return result == 4 ? 4 : c.output_error ? 1 : result;

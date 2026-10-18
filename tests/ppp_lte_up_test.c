@@ -37,7 +37,7 @@ static struct {
     unsigned host, identity, preflight, stores, store_releases, baseline, discovery, starts, slices;
     unsigned capture, samples, link_inits, link_steps, cleanups, primaries, closed_at_reap_cleanup;
     unsigned restores, released, finishes, session_steps, session_release, sleeps, hangup_installs, restores_sig;
-    unsigned sigpipe_installs;
+    unsigned sigpipe_installs, waits_short, waits_long, short_run, max_short_run, odd_runs;
     uint64_t now, step_ms, start_ms, signal_at_ms;
     int stop, ended, closed, quiet, connected_seen;
     void (*hangup)(int);
@@ -172,7 +172,16 @@ static int fake_runner_slice(struct ppp_runner *r, const volatile sig_atomic_t *
             .supervisor_phase = PPP_SESSION};
     }
     /* Traffic counters move while connected. */
-    if (f.connected_seen) f.child.usb_input_bytes += 100;
+    /* Sparse traffic: one 100-byte read every 150 slices, so the 1 ms hold
+     * (100 slices) and the return to 10 ms are both visible. */
+    if (f.connected_seen && f.slices % 150 == 0) { f.child.usb_input_bytes += 100; f.child.usb_input_reads++; }
+    if (*wait == 1) { f.waits_short++; f.short_run++; }
+    else {
+        if (*wait == 10) f.waits_long++;
+        if (f.short_run > f.max_short_run) f.max_short_run = f.short_run;
+        if (f.short_run && f.short_run != 100) f.odd_runs++;
+        f.short_run = 0;
+    }
     uint64_t elapsed = f.start_ms ? f.now - f.start_ms : 0;
     if (!f.ended && f.connected_seen && f.signal_at_ms && elapsed >= f.signal_at_ms) {
         if (f.scenario == HANGUP && f.hangup) f.hangup(SIGHUP);
@@ -455,7 +464,17 @@ static void run(enum scenario s) {
                            " sc-post=done:removed:0:failed:0:before:none:after:none primary-restored=yes") &&
               strstr(text, " child-exit=code:5 term-count=1 kill-count=0 ") &&
               strstr(text, " ppp-lcp-echo=0/0 ppp-lcp-echo-reply=0/0 ") &&
+              strstr(text, " usb-in-bytes=") && strstr(text, " usb-in-reads=") &&
               strstr(text, " remote-termination=unproven next-run-cleanup=not-required attribution=fixture"));
+    if (s == USER_STOP) {
+        /* The summary counts match the fixture: 100 bytes per completed read. */
+        unsigned long long in_bytes = 0, in_reads = 0;
+        const char *b = strstr(text, " usb-in-bytes="), *r = strstr(text, " usb-in-reads=");
+        CHECK(b && r && sscanf(b, " usb-in-bytes=%llu", &in_bytes) == 1 && sscanf(r, " usb-in-reads=%llu", &in_reads) == 1);
+        CHECK(in_reads == f.child.usb_input_reads && in_bytes == 100 * in_reads && in_reads > 0);
+        /* Each movement holds 1 ms for exactly 100 slices, then 10 ms again. */
+        CHECK(f.waits_short > 0 && f.waits_long > 0 && f.max_short_run == 100 && !f.odd_runs);
+    }
     if (s == USB_UNPLUG)
         CHECK(strstr(text, " pppd-leftover=ppp+ipv4+ipv6+dns+proxies+interface+smb sc-reap=done:removed:7") &&
               strstr(text, " child-exit=signal:9 ") && strstr(text, " usb-error=no-device usb-error-site=completion "));

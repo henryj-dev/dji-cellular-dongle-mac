@@ -84,6 +84,8 @@ struct ppp_supervisor {
      * bytes of completed USB reads, counted at read time whether or not the
      * queue/stream later accepts them. */
     uint64_t child_output_bytes, usb_input_bytes;
+    /* Diagnostics only: completed USB reads counted with usb_input_bytes. */
+    uint64_t usb_input_reads;
     /* Diagnostics only, never used for any decision: the first USB adapter
      * error label, written by the bound adapter. Kept here because the adapter
      * is freed before the supervisor and must not be read afterwards. */

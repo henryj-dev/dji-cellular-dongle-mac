@@ -957,12 +957,12 @@ static void integrated_test(const char *path, size_t capacity, size_t split, con
     unsigned char bytes[64 + 3072]; CHECK(head <= 64); memcpy(bytes, control, head);
     for (size_t n = head; n < total; n++) bytes[n] = (unsigned char)n;
     size_t offset = 0; uint64_t deadline = wall() + 10000;
-    unsigned old_submits = 0; int order = 1, retained = 0;
+    unsigned old_submits = 0, completions = 0; int order = 1, retained = 0;
     while (sdk.output_length < total - head + 3 && !s.error && wall() < deadline) {
         if (sdk.pending && !sdk.queued && offset < total) {
             size_t length = total - offset;
             if (length > split) length = split;
-            queue_result(bytes + offset, length, 0, length); offset += length;
+            queue_result(bytes + offset, length, 0, length); offset += length; completions++;
         }
         size_t suffix = s.usb_length - s.usb_offset; old_submits = sdk.submits;
         drive(&s);
@@ -975,6 +975,7 @@ static void integrated_test(const char *path, size_t capacity, size_t split, con
     CHECK(!memcmp(sdk.output + 3, bytes + head, total - head));
     /* Diagnostic counters: every accepted USB and child byte, never contents. */
     CHECK(s.usb_input_bytes == offset && s.child_output_bytes >= sdk.output_length);
+    CHECK(s.usb_input_reads == completions && completions > 0);
     CHECK(s.stream.control_bytes == head && s.stream.echo_seen == (control[0] == 'A'));
     CHECK(s.stream.modem_result == OFFLINE_MODEM_NONE);
     /* The negotiation copy sees only post-CONNECT bytes, never the control text. */
@@ -1822,13 +1823,13 @@ static void runner_wait_signal_test(const char *path) {
             CHECK(!copy.exited && !copy.signaled && copy.stream_state == OFFLINE_CONTROL_WAIT);
             {   /* Diagnostic fields are copied from the owned supervisor, values only. */
                 struct ppp_supervisor *sv = &active_runner->session->supervisor, saved = *sv;
-                sv->usb_input_bytes = 7; sv->child_output_bytes = 5; sv->stream.control_bytes = 3;
+                sv->usb_input_bytes = 7; sv->usb_input_reads = 2; sv->child_output_bytes = 5; sv->stream.control_bytes = 3;
                 sv->stream.echo_seen = 1; sv->stream.modem_result = OFFLINE_MODEM_CME;
                 sv->stream.modem_code = 30; sv->stream.modem_code_valid = 1;
                 sv->stream.error = OFFLINE_ERROR_RESULT;
                 struct ppp_session_observation seeded;
                 CHECK(ppp_runner_observe(active_runner, &status, &seeded) == 0);
-                CHECK(seeded.usb_input_bytes == 7 && seeded.child_output_bytes == 5 &&
+                CHECK(seeded.usb_input_bytes == 7 && seeded.usb_input_reads == 2 && seeded.child_output_bytes == 5 &&
                       seeded.control_bytes == 3 && seeded.echo_seen && seeded.modem_result == OFFLINE_MODEM_CME &&
                       seeded.modem_code == 30 && seeded.modem_code_valid &&
                       seeded.stream_error == OFFLINE_ERROR_RESULT && seeded.pid == copy.pid);

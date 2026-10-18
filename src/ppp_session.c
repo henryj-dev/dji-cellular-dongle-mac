@@ -185,6 +185,7 @@ int ppp_session_observe(struct ppp_session *s, struct ppp_session_observation *o
         o->control_bytes = stream->control_bytes;
         o->child_output_bytes = s->supervisor.child_output_bytes;
         o->usb_input_bytes = s->supervisor.usb_input_bytes;
+        o->usb_input_reads = s->supervisor.usb_input_reads;
         o->stderr_bytes = c->stderr_bytes;
         /* Supervisor-held copy only: the adapter may already be freed. */
         o->usb_error_kind = s->supervisor.usb_error_kind;
