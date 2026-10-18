@@ -16,6 +16,8 @@ static const uint8_t CEREG_PROBE[10] = {'A', 'T', '+', 'C', 'E', 'R', 'E', 'G', 
 static const uint8_t CGDCONT_PROBE[12] = {'A', 'T', '+', 'C', 'G', 'D', 'C', 'O', 'N', 'T', '?', '\r'};
 /* Capability test only: AT(2) + +(1) + CGDATA(6) + =?(2) + CR(1) = 12 bytes. */
 static const uint8_t CGDATA_TEST_PROBE[12] = {'A', 'T', '+', 'C', 'G', 'D', 'A', 'T', 'A', '=', '?', '\r'};
+/* Read-only extended signal quality (3GPP TS 27.007): AT+CESQ plus CR = 8 bytes. */
+static const uint8_t CESQ_PROBE[8] = {'A', 'T', '+', 'C', 'E', 'S', 'Q', '\r'};
 
 const uint8_t *at_probe_command_bytes(enum at_probe_command command, uint32_t *size) {
     switch (command) {
@@ -27,13 +29,14 @@ const uint8_t *at_probe_command_bytes(enum at_probe_command command, uint32_t *s
     case AT_PROBE_COMMAND_CEREG: *size = (uint32_t)sizeof(CEREG_PROBE); return CEREG_PROBE;
     case AT_PROBE_COMMAND_CGDCONT: *size = (uint32_t)sizeof(CGDCONT_PROBE); return CGDCONT_PROBE;
     case AT_PROBE_COMMAND_CGDATA_TEST: *size = (uint32_t)sizeof(CGDATA_TEST_PROBE); return CGDATA_TEST_PROBE;
+    case AT_PROBE_COMMAND_CESQ: *size = (uint32_t)sizeof(CESQ_PROBE); return CESQ_PROBE;
     }
     *size = 0;
     return NULL;
 }
 
 int at_probe_is_fixed_command(const uint8_t *bytes, uint32_t size) {
-    for (int command = AT_PROBE_COMMAND_AT; command <= AT_PROBE_COMMAND_CGDATA_TEST; command++) {
+    for (int command = AT_PROBE_COMMAND_AT; command <= AT_PROBE_COMMAND_CESQ; command++) {
         uint32_t fixed_size = 0;
         const uint8_t *fixed = at_probe_command_bytes((enum at_probe_command)command, &fixed_size);
         if (fixed && bytes == fixed && size == fixed_size) return 1;

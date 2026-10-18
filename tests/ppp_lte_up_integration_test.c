@@ -6,6 +6,7 @@
 #include "ppp_lte_service.h"
 #include "ppp_runner.h"
 #include "ppp_trial_preflight.h"
+#include "status_probe.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <ifaddrs.h>
@@ -289,6 +290,39 @@ int trial_preflight(void *context, struct trial_preflight *p) { return fake_pref
 #define ppp_runner_restore fake_runner_restore
 #define ppp_runner_release fake_runner_release
 #define discovery_with_one_target fake_discovery
+/* Tentative declaration of up.c's latch, so the fake can compare it. */
+static volatile sig_atomic_t up_hangup;
+/* Signal query before dialing: 0 confirmed numbers, 1 I/O error, 2 cancelled,
+ * 3 CSQ only (CESQ answered ERROR). Kept outside f, which setup() clears. */
+static int signal_mode;
+static unsigned signal_probes;
+static int fake_probe_signal(io_service_t service, IOUSBDeviceInterface **device, uint64_t registry_id,
+                             const struct descriptor_config *config, const volatile sig_atomic_t *prior,
+                             struct status_probe_result *r) {
+    (void)service; (void)device; (void)registry_id; (void)config;
+    signal_probes++;
+    CHECK(prior == &up_hangup);
+    memset(r, 0, sizeof(*r));
+    r->stop_index = STATUS_PROBE_SLOTS;
+    if (signal_mode == 1 || signal_mode == 2) {
+        r->stop = signal_mode == 1 ? STATUS_STOP_IO_ERROR : STATUS_STOP_CANCELLED;
+        return signal_mode == 1 ? DJI_GONE : DJI_CANCELLED;
+    }
+    struct status_command_result *csq = &r->commands[1], *cesq = &r->commands[STATUS_PROBE_CESQ_INDEX];
+    *csq = (struct status_command_result){.sent = 1, .complete = 1, .values = 2, .value_lines = 1, .value = {20, 99},
+        .result = STATUS_RESULT_OK, .attribution = STATUS_ATTRIBUTION_MATCHED};
+    if (signal_mode == 3) {
+        *cesq = (struct status_command_result){.sent = 1, .complete = 1, .result = STATUS_RESULT_ERROR,
+            .attribution = STATUS_ATTRIBUTION_MATCHED};
+        r->stop = STATUS_STOP_FINAL_ERROR; r->stop_index = STATUS_PROBE_CESQ_INDEX;
+        return DJI_OK;
+    }
+    *cesq = (struct status_command_result){.sent = 1, .complete = 1, .values = 6, .value_lines = 1, .value = {99, 99, 255, 255, 19, 46},
+        .result = STATUS_RESULT_OK, .attribution = STATUS_ATTRIBUTION_MATCHED};
+    r->stop = STATUS_STOP_NONE;
+    return DJI_OK;
+}
+#define usb_observer_probe_signal fake_probe_signal
 #define open(...) lock_fake_open(__VA_ARGS__)
 #define flock(...) lock_fake_flock(__VA_ARGS__)
 #define close(...) lock_fake_close(__VA_ARGS__)

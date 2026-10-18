@@ -474,11 +474,86 @@ static void table_checks(void) {
     CHECK(f.prepares == 0 && f.writes == 0);
 }
 
+/* Signal query: AT+CSQ then AT+CESQ, numbers kept even with no stream. */
+static void signal_checks(void) {
+    const struct at_probe_backend backend = {NULL, fake_now, fake_cancelled, fake_prepare, fake_validate,
+        fake_open, fake_write, fake_read, fake_close, fake_release};
+    struct at_probe_backend b = backend;
+    struct status_probe_result r;
+    struct fake f = {0};
+    b.context = &f;
+    ADD(&f, 0, "AT+CSQ\r\r\n+CSQ: 20,99\r\n\r\nOK\r\n");
+    ADD(&f, 1, "AT+CESQ\r\r\n+CESQ: 99,99,255,255,19,46\r\n\r\nOK\r\n");
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(f.writes == 2 && r.commands_sent == 2 && r.stop == STATUS_STOP_NONE && r.stop_index == STATUS_PROBE_SLOTS);
+    CHECK(f.written_size[0] == 7 && memcmp(f.written[0], "AT+CSQ\r", 7) == 0);
+    CHECK(f.written_size[1] == 8 && memcmp(f.written[1], "AT+CESQ\r", 8) == 0);
+    const struct status_command_result *csq = &r.commands[1], *cesq = &r.commands[STATUS_PROBE_CESQ_INDEX];
+    CHECK(csq->complete && csq->result == STATUS_RESULT_OK && csq->attribution == STATUS_ATTRIBUTION_MATCHED);
+    CHECK(csq->values == 2 && csq->value[0] == 20 && csq->value[1] == 99);
+    CHECK(cesq->complete && cesq->result == STATUS_RESULT_OK && cesq->attribution == STATUS_ATTRIBUTION_MATCHED);
+    CHECK(cesq->values == 6 && cesq->value[4] == 19 && cesq->value[5] == 46 && cesq->value[2] == 255);
+    CHECK(csq->value_lines == 1 && cesq->value_lines == 1);
+    CHECK(f.closes == 1 && f.releases == 1 && !f.active);
+
+    /* With a stream: fixed fields only. */
+    f = (struct fake){0}; b.context = &f;
+    ADD(&f, 0, "AT+CSQ\r\r\n+CSQ: 20,99\r\n\r\nOK\r\n");
+    ADD(&f, 1, "AT+CESQ\r\r\n+CESQ: 99,99,255,255,19,46\r\n\r\nOK\r\n");
+    FILE *stream;
+    capture_begin(&stream);
+    CHECK(signal_probe_run(&b, &r, stream) == DJI_OK);
+    capture_end(stream);
+    HAS("status cmd=cesq line=2 rxlev=99 ber=99 rscp=255 ecno=255 rsrq=19 rsrp=46\n");
+    HAS("status cmd=cesq attribution=matched reason=format-only\n");
+    HAS("probe status=0 commands_sent=2 stop=none stop_index=7 ");
+
+    /* CESQ unsupported: CSQ numbers stay, CESQ has none, run stops on the final error. */
+    f = (struct fake){0}; b.context = &f;
+    ADD(&f, 0, "AT+CSQ\r\r\n+CSQ: 20,99\r\n\r\nOK\r\n");
+    ADD(&f, 1, "AT+CESQ\r\r\nERROR\r\n");
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(r.stop == STATUS_STOP_FINAL_ERROR && r.stop_index == STATUS_PROBE_CESQ_INDEX);
+    CHECK(r.commands[1].values == 2 && r.commands[STATUS_PROBE_CESQ_INDEX].values == 0 &&
+          r.commands[STATUS_PROBE_CESQ_INDEX].result == STATUS_RESULT_ERROR);
+
+    /* Malformed CESQ (five fields, seven fields, 4 digits): never kept, never printed. */
+    static const char *const bad[] = {"AT+CESQ\r\r\n+CESQ: 99,99,255,255,19\r\n\r\nOK\r\n",
+        "AT+CESQ\r\r\n+CESQ: 99,99,255,255,19,46,1\r\n\r\nOK\r\n",
+        "AT+CESQ\r\r\n+CESQ: 99,99,255,255,19,4600\r\n\r\nOK\r\n"};
+    for (unsigned k = 0; k < 3; k++) {
+        f = (struct fake){0}; b.context = &f;
+        ADD(&f, 0, "AT+CSQ\r\r\n+CSQ: 20,99\r\n\r\nOK\r\n");
+        add_reply(&f, 1, bad[k], strlen(bad[k]));
+        capture_begin(&stream);
+        CHECK(signal_probe_run(&b, &r, stream) == DJI_OK);
+        capture_end(stream);
+        CHECK(r.commands[STATUS_PROBE_CESQ_INDEX].values == 0);
+        HAS("status cmd=cesq line=2 redacted=1 length=");
+        LACKS("4600");
+    }
+
+    /* Two value lines in one confirmed reply: counted, so the caller can refuse the numbers. */
+    f = (struct fake){0}; b.context = &f;
+    ADD(&f, 0, "AT+CSQ\r\r\n+CSQ: 20,99\r\n+CSQ: garbage\r\n\r\nOK\r\n");
+    ADD(&f, 1, "AT+CESQ\r\r\n+CESQ: 99,99,255,255,19,46\r\n\r\nOK\r\n");
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(r.commands[1].value_lines == 2 && r.commands[STATUS_PROBE_CESQ_INDEX].value_lines == 1);
+
+    /* CSQ timeout: CESQ never sent, nothing kept. */
+    f = (struct fake){0}; b.context = &f;
+    CHECK(signal_probe_run(&b, &r, NULL) == DJI_OK);
+    CHECK(f.writes == 1 && r.stop == STATUS_STOP_TIMEOUT && r.commands[1].values == 0 &&
+          r.commands[STATUS_PROBE_CESQ_INDEX].sent == 0);
+    CHECK(signal_probe_run(NULL, &r, NULL) == DJI_SYSTEM_ERROR);
+}
+
 int main(void) {
     struct fake f;
     struct status_probe_result r;
     parser_checks();
     table_checks();
+    signal_checks();
 
     /* Normal: all four with echo, each ends early on its final line (no extra reads). */
     f = (struct fake){0};
@@ -491,7 +566,7 @@ int main(void) {
     for (unsigned i = 0; i < 4; i++) CHECK(f.reads_per_command[i] == 1 && r.commands[i].result == STATUS_RESULT_OK);
     HAS("cpin=\"READY\""); HAS("rssi=18 ber=99"); HAS("oper=\"SKTelecom\" act=7"); HAS("n=2 stat=1 extra_fields=3");
     HAS("status cmd=cpin sent=1 reads=1 result=ok\n"); HAS("status cmd=cereg sent=1 reads=1 result=ok\n");
-    HAS("probe status=0 commands_sent=4 stop=none stop_index=6 evidence=format-only protocol=unconfirmed\n");
+    HAS("probe status=0 commands_sent=4 stop=none stop_index=7 evidence=format-only protocol=unconfirmed\n");
     LACKS("1A2B"); LACKS("01C3D4E5");
     for (unsigned i = 0; i < 4; i++) VERDICT(r.commands[i], STATUS_ATTRIBUTION_MATCHED, STATUS_REASON_FORMAT_ONLY);
     HAS("status cmd=cpin attribution=matched reason=format-only\n");

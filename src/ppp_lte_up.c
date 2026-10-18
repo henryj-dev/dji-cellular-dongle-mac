@@ -6,6 +6,8 @@
 #include "ppp_lte_service.h"
 #include "ppp_runner.h"
 #include "ppp_trial_preflight.h"
+#include "status_probe.h"
+#include "usb_observer.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -241,10 +243,52 @@ static void up_reaped(struct up_context *c) {
     c->reap_cleaned = 1;
     (void)ppp_lte_service_cleanup(c->store, &c->reap);
 }
+static const char *const up_signal_stops[] = {"none", "timeout", "io-error", "cancelled", "clock-error",
+    "time-budget", "read-cap", "zero-count", "oversize", "write-error", "unconfirmed", "final-error"};
+/* A slot's numbers count only when its reply was confirmed (own echo, one final OK). */
+static int up_signal_values(const struct status_probe_result *r, unsigned index, unsigned count) {
+    const struct status_command_result *k = &r->commands[index];
+    return k->complete && k->attribution == STATUS_ATTRIBUTION_MATCHED && k->result == STATUS_RESULT_OK &&
+        k->values == count && k->value_lines == 1;
+}
+/* One line of signal numbers before dialing. 3GPP TS 27.007 / 36.133 mapping:
+ * CSQ rssi 0..31 = -113 + 2n dBm; CESQ rsrp 0..97 = n - 141 dBm (lower bound),
+ * rsrq 0..34 = -20 + n/2 dB (lower bound); 99/255 mean unknown. Never decides anything. */
+static void up_signal(struct up_context *c, int status, const struct status_probe_result *r) {
+    char rssi[16] = "unproven", rssi_dbm[16] = "unproven", rsrp[16] = "unproven", rsrp_dbm[16] = "unproven";
+    char rsrq[16] = "unproven", rsrq_db[16] = "unproven";
+    int csq = up_signal_values(r, 1, 2), cesq = up_signal_values(r, STATUS_PROBE_CESQ_INDEX, 6);
+    if (csq) {
+        unsigned n = r->commands[1].value[0];
+        (void)snprintf(rssi, sizeof(rssi), "%u", n);
+        if (n <= 31) (void)snprintf(rssi_dbm, sizeof(rssi_dbm), "%d", -113 + 2 * (int)n);
+        else (void)snprintf(rssi_dbm, sizeof(rssi_dbm), "unknown");
+    }
+    if (cesq) {
+        unsigned q = r->commands[STATUS_PROBE_CESQ_INDEX].value[4];
+        unsigned p = r->commands[STATUS_PROBE_CESQ_INDEX].value[5];
+        (void)snprintf(rsrq, sizeof(rsrq), "%u", q);
+        (void)snprintf(rsrp, sizeof(rsrp), "%u", p);
+        /* Half-dB steps: q - 40 is -40..-6, always negative. */
+        if (q <= 34) (void)snprintf(rsrq_db, sizeof(rsrq_db), "-%u.%u", (40 - q) / 2, (40 - q) % 2 ? 5u : 0u);
+        else (void)snprintf(rsrq_db, sizeof(rsrq_db), "unknown");
+        if (p <= 97) (void)snprintf(rsrp_dbm, sizeof(rsrp_dbm), "%d", (int)p - 141);
+        else (void)snprintf(rsrp_dbm, sizeof(rsrp_dbm), "unknown");
+    }
+    up_line(c, "up-signal=%s csq-rssi=%s rssi-dbm=%s cesq-rsrp=%s rsrp-dbm=%s cesq-rsrq=%s rsrq-db=%s"
+        " probe-status=%d stop=%s\n", csq && cesq ? "ok" : csq || cesq ? "partial" : "unproven",
+        rssi, rssi_dbm, rsrp, rsrp_dbm, rsrq, rsrq_db, status, UP_NAME(up_signal_stops, r->stop));
+}
 static int up_target(void *context, io_service_t service, IOUSBDeviceInterface **device,
                      uint64_t registry_id, const struct descriptor_config *config) {
     struct up_context *c = context;
     struct ppp_session *session = NULL;
+    /* Signal numbers first: the same interface carries PPP once dialed. A failed
+     * query only leaves "unproven" numbers; the session decides on its own. */
+    struct status_probe_result signal;
+    int probe = usb_observer_probe_signal(service, device, registry_id, config, &up_hangup, &signal);
+    up_signal(c, probe, &signal);
+    if (probe == DJI_CANCELLED || up_hangup) { c->user_stop = 1; c->reason = "user-stop"; return DJI_OK; }
     const uint32_t read_timeout = UP_READ_TIMEOUT_MS;
     struct ppp_session_request request = {.service = service, .device = device,
         .registry_id = registry_id, .config = config,

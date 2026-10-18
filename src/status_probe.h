@@ -14,7 +14,11 @@
 #define STATUS_PROBE_PDP_INDEX 4u
 /* Slot 5 is the --probe-data-support capability test; never a data connection. */
 #define STATUS_PROBE_DATA_SUPPORT_INDEX 5u
-#define STATUS_PROBE_SLOTS 6u
+/* Slot 6 is AT+CESQ, sent only by the signal query before a PPP session. */
+#define STATUS_PROBE_CESQ_INDEX 6u
+#define STATUS_PROBE_SLOTS 7u
+/* Numbers kept from one parsed CSQ (2) or CESQ (6) value line. */
+#define STATUS_PROBE_VALUES 6u
 #define STATUS_PROBE_APN_MAX 63u
 #define STATUS_PROBE_MAX_LINES 16u
 #define STATUS_PROBE_CME_MAX 40u
@@ -94,6 +98,13 @@ struct status_command_result {
     unsigned pre_echo_skipped;
     /* Run path only: own echo then a terminated final line were collected. */
     unsigned complete;
+    /* CSQ and CESQ only: numbers of the last printed value line, in reply order
+     * (CSQ rssi,ber; CESQ rxlev,ber,rscp,ecno,rsrq,rsrp). values is how many. */
+    unsigned values;
+    unsigned value[STATUS_PROBE_VALUES];
+    /* Own-prefix lines met while printing (parsed or not); a single one is required
+     * before the numbers are trusted. */
+    unsigned value_lines;
     enum status_result result;
     enum status_attribution attribution;
     enum status_attribution_reason attribution_reason;
@@ -131,5 +142,10 @@ int pdp_probe_run(const struct at_probe_backend *backend, struct status_probe_re
 /* --probe-data-support: AT+CGDATA=? once. Known L2P capability only, not a PPP connection. */
 int data_support_probe_run(const struct at_probe_backend *backend, struct status_probe_result *result,
                            FILE *stream);
+
+/* Signal query before a PPP session: AT+CSQ then AT+CESQ, each at most once, same
+ * stop rules as --probe-status. A NULL stream still parses (output is discarded). */
+int signal_probe_run(const struct at_probe_backend *backend, struct status_probe_result *result,
+                     FILE *stream);
 
 #endif

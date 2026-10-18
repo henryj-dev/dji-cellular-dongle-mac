@@ -6,6 +6,7 @@
 #include "ppp_lte_service.h"
 #include "ppp_runner.h"
 #include "ppp_trial_preflight.h"
+#include "status_probe.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -324,6 +325,38 @@ int trial_preflight(void *context, struct trial_preflight *p) { return fake_pref
 #define ppp_runner_restore fake_runner_restore
 #define ppp_runner_release fake_runner_release
 #define discovery_with_one_target fake_discovery
+/* Signal query before dialing: 0 confirmed numbers, 1 I/O error, 2 cancelled,
+ * 3 CSQ only (CESQ answered ERROR), 4 two +CSQ lines (CSQ refused). Kept outside f, which setup() clears. */
+static int signal_mode;
+static unsigned signal_probes;
+static int fake_probe_signal(io_service_t service, IOUSBDeviceInterface **device, uint64_t registry_id,
+                             const struct descriptor_config *config, const volatile sig_atomic_t *prior,
+                             struct status_probe_result *r) {
+    (void)service; (void)device; (void)registry_id; (void)config;
+    signal_probes++;
+    CHECK(prior == &up_hangup);
+    memset(r, 0, sizeof(*r));
+    r->stop_index = STATUS_PROBE_SLOTS;
+    if (signal_mode == 1 || signal_mode == 2) {
+        r->stop = signal_mode == 1 ? STATUS_STOP_IO_ERROR : STATUS_STOP_CANCELLED;
+        return signal_mode == 1 ? DJI_GONE : DJI_CANCELLED;
+    }
+    struct status_command_result *csq = &r->commands[1], *cesq = &r->commands[STATUS_PROBE_CESQ_INDEX];
+    *csq = (struct status_command_result){.sent = 1, .complete = 1, .values = 2, .value_lines = 1, .value = {20, 99},
+        .result = STATUS_RESULT_OK, .attribution = STATUS_ATTRIBUTION_MATCHED};
+    if (signal_mode == 3) {
+        *cesq = (struct status_command_result){.sent = 1, .complete = 1, .result = STATUS_RESULT_ERROR,
+            .attribution = STATUS_ATTRIBUTION_MATCHED};
+        r->stop = STATUS_STOP_FINAL_ERROR; r->stop_index = STATUS_PROBE_CESQ_INDEX;
+        return DJI_OK;
+    }
+    *cesq = (struct status_command_result){.sent = 1, .complete = 1, .values = 6, .value_lines = 1, .value = {99, 99, 255, 255, 19, 46},
+        .result = STATUS_RESULT_OK, .attribution = STATUS_ATTRIBUTION_MATCHED};
+    if (signal_mode == 4) csq->value_lines = 2; /* two +CSQ lines in one reply */
+    r->stop = STATUS_STOP_NONE;
+    return DJI_OK;
+}
+#define usb_observer_probe_signal fake_probe_signal
 #define ppp_lte_link_init fake_link_init
 #define ppp_lte_link_step fake_link_step
 #define ppp_lte_service_cleanup(...) fake_cleanup(__VA_ARGS__)
@@ -398,6 +431,7 @@ static int expected_exit(enum scenario s) {
 }
 static void run(enum scenario s) {
     setup(s); lock_opens = lock_closes = lock_takes = 0;
+    signal_probes = 0;
     if (s == CEILING) f.signal_at_ms = 0;
     FILE *output = tmpfile(); CHECK(output != NULL); if (!output) return;
     char *argv[] = {"up", "--up"};
@@ -442,6 +476,27 @@ static void run(enum scenario s) {
     CHECK(strstr(text, "up=starting sc-pre-removed=") == text);
     if (s == PRE_REMOVED) CHECK(strstr(text, "up=starting sc-pre-removed=2\n") == text);
     CHECK(f.finishes == 1);
+    /* One signal line after the start and before the summary, whenever a target was reached. */
+    if (s == BASELINE_ERROR) CHECK(!strstr(text, "up-signal"));
+    else {
+        char line[256];
+        if (signal_mode == 1)
+            (void)snprintf(line, sizeof(line), "\nup-signal=unproven csq-rssi=unproven rssi-dbm=unproven"
+                " cesq-rsrp=unproven rsrp-dbm=unproven cesq-rsrq=unproven rsrq-db=unproven probe-status=%d"
+                " stop=io-error\n", DJI_GONE);
+        else if (signal_mode == 4)
+            (void)snprintf(line, sizeof(line), "\nup-signal=partial csq-rssi=unproven rssi-dbm=unproven cesq-rsrp=46"
+                " rsrp-dbm=-95 cesq-rsrq=19 rsrq-db=-10.5 probe-status=0 stop=none\n");
+        else if (signal_mode == 3)
+            (void)snprintf(line, sizeof(line), "\nup-signal=partial csq-rssi=20 rssi-dbm=-73 cesq-rsrp=unproven"
+                " rsrp-dbm=unproven cesq-rsrq=unproven rsrq-db=unproven probe-status=0 stop=final-error\n");
+        else
+            (void)snprintf(line, sizeof(line), "\nup-signal=ok csq-rssi=20 rssi-dbm=-73 cesq-rsrp=46 rsrp-dbm=-95"
+                " cesq-rsrq=19 rsrq-db=-10.5 probe-status=0 stop=none\n");
+        const char *at = strstr(text, line), *summary = strstr(text, "up-result=");
+        CHECK(at && summary && at < summary && signal_probes == 1);
+        if (!at) fprintf(stderr, "FAIL lte-up signal text=%s\n", text);
+    }
     if (s == BASELINE_ERROR || s == SESSION_REJECT || s == RUNNER_REJECT) {
         CHECK(!f.capture && !f.slices && strstr(text, " sc-reap=not-run ") && strstr(text, " pppd-leftover=not-run "));
         if (s == RUNNER_REJECT) CHECK(f.session_release == 1 && f.session_steps == 3);
@@ -559,10 +614,34 @@ static void cli(void) {
     CHECK(lte_up(2, bad1, stdout, NULL) == 2 && lte_up(3, bad2, stdout, NULL) == 2 && lte_up(1, bad3, stdout, NULL) == 2);
     CHECK(!f.host && !f.stores);
 }
+/* A stop during the signal query: no session is started and nothing is dialed. */
+static void signal_cancelled(void) {
+    setup(USER_STOP); lock_opens = lock_closes = lock_takes = 0; signal_probes = 0; signal_mode = 2;
+    FILE *output = tmpfile(); CHECK(output != NULL); if (!output) return;
+    f.out = output;
+    char *argv[] = {"up", "--up"};
+    int result = lte_up(2, argv, output, NULL);
+    CHECK(result == 3 && signal_probes == 1 && !f.starts && !f.slices && f.finishes == 1);
+    CHECK(lock_closes == lock_opens && lock_takes == 1u && f.stores == f.store_releases);
+    CHECK(fseek(output, 0, SEEK_SET) == 0);
+    char text[8192] = {0}; (void)fread(text, 1, sizeof(text) - 1, output);
+    fclose(output);
+    char line[256];
+    (void)snprintf(line, sizeof(line), "\nup-signal=unproven csq-rssi=unproven rssi-dbm=unproven cesq-rsrp=unproven"
+        " rsrp-dbm=unproven cesq-rsrq=unproven rsrq-db=unproven probe-status=%d stop=cancelled\n", DJI_CANCELLED);
+    CHECK(strstr(text, line) && strstr(text, "up-result=ended reason=user-stop connected=no "));
+    signal_mode = 0;
+}
 int main(void) {
     /* The process under test ignores SIGPIPE itself; the fake sigaction does not. */
     (void)signal(SIGPIPE, SIG_IGN);
     for (enum scenario s = USER_STOP; s < SCENARIOS; s++) run(s);
+    /* Signal query failures never change the session itself. */
+    signal_mode = 1; run(USER_STOP);
+    signal_mode = 3; run(USER_STOP);
+    signal_mode = 4; run(USER_STOP);
+    signal_mode = 0;
+    signal_cancelled();
     cleanup_mode(); lock_test(); cli();
     printf("lte-up checks=%u failures=%u (fake runner/store/link; no device, pppd or network)\n", checks, failures);
     return failures ? 1 : 0;

@@ -24,4 +24,11 @@ int usb_observer_probe_pdp(io_service_t service, IOUSBDeviceInterface **device,
 /* Approved --probe-data-support only: interface 2, fixed AT+CGDATA=? once. */
 int usb_observer_probe_data_support(io_service_t service, IOUSBDeviceInterface **device,
                                     uint64_t registry_id, const struct descriptor_config *config);
+/* Before a PPP session only: interface 2, fixed AT+CSQ then AT+CESQ once each, same
+ * guards as the probes. Fills *signal (numbers only); prints nothing. */
+struct status_probe_result;
+int usb_observer_probe_signal(io_service_t service, IOUSBDeviceInterface **device,
+                              uint64_t registry_id, const struct descriptor_config *config,
+                              const volatile sig_atomic_t *prior_cancelled,
+                              struct status_probe_result *signal);
 #endif

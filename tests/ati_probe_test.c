@@ -296,7 +296,7 @@ static void append_checks(void) {
     uint32_t size = 9;
     CHECK(at_probe_command_bytes(AT_PROBE_COMMAND_AT, &size) && size == 3);
     CHECK(at_probe_command_bytes(AT_PROBE_COMMAND_ATI, &size) && size == 4);
-    CHECK(at_probe_command_bytes((enum at_probe_command)(AT_PROBE_COMMAND_CGDATA_TEST + 1), &size) == NULL && size == 0);
+    CHECK(at_probe_command_bytes((enum at_probe_command)(AT_PROBE_COMMAND_CESQ + 1), &size) == NULL && size == 0);
 }
 
 int main(void) {

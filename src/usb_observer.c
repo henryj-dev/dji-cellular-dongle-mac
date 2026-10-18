@@ -481,7 +481,7 @@ cleanup:
 static int run_mode(io_service_t service, IOUSBDeviceInterface **device,
                     uint64_t registry_id, const struct descriptor_config *config, int analyze,
                     const volatile sig_atomic_t *prior_cancelled, int probe,
-                    enum at_probe_command command) {
+                    enum at_probe_command command, struct status_probe_result *signal) {
     struct usb_context c = {.device_service = service, .device = device,
                             .device_id = registry_id, .config = config,
                             .prior_cancelled = prior_cancelled};
@@ -530,6 +530,11 @@ static int run_mode(io_service_t service, IOUSBDeviceInterface **device,
     if (probe) {
         const struct at_probe_backend probe_backend = {&c, now_ms, cancelled, prepare, probe_validate,
             probe_open, write_bulk, probe_read, close_interface, release_interface};
+        if (probe == 5) {
+            /* Output discarded: the caller prints one summary line from *signal. */
+            status = signal_probe_run(&probe_backend, signal, NULL);
+            goto cleanup;
+        }
         if (probe == 2 || probe == 3 || probe == 4) {
             struct status_probe_result status_result;
             if (probe == 2) status = status_probe_run(&probe_backend, &status_result, stdout);
@@ -554,36 +559,53 @@ cleanup:
     int term_error = sigaction(SIGTERM, &old_term, NULL);
     int int_error = sigaction(SIGINT, &old_int, NULL);
     if (term_error != 0 || int_error != 0) status = DJI_SYSTEM_ERROR;
+    /* Signal query: a stop seen at any point, even with a close error or after the
+     * last check, must reach the caller so it never dials. */
+    if (probe == 5 && signal && (interrupted || (prior_cancelled && *prior_cancelled))) {
+        signal->stop = STATUS_STOP_CANCELLED;
+        status = DJI_CANCELLED;
+    }
     return status;
 }
 
 int usb_observer_observe(io_service_t service, IOUSBDeviceInterface **device,
                          uint64_t registry_id, const struct descriptor_config *config, int analyze,
                          const volatile sig_atomic_t *prior_cancelled) {
-    return run_mode(service, device, registry_id, config, analyze, prior_cancelled, 0, AT_PROBE_COMMAND_AT);
+    return run_mode(service, device, registry_id, config, analyze, prior_cancelled, 0, AT_PROBE_COMMAND_AT, NULL);
 }
 
 int usb_observer_probe_at(io_service_t service, IOUSBDeviceInterface **device,
                           uint64_t registry_id, const struct descriptor_config *config) {
-    return run_mode(service, device, registry_id, config, 0, NULL, 1, AT_PROBE_COMMAND_AT);
+    return run_mode(service, device, registry_id, config, 0, NULL, 1, AT_PROBE_COMMAND_AT, NULL);
 }
 
 int usb_observer_probe_ati(io_service_t service, IOUSBDeviceInterface **device,
                            uint64_t registry_id, const struct descriptor_config *config) {
-    return run_mode(service, device, registry_id, config, 0, NULL, 1, AT_PROBE_COMMAND_ATI);
+    return run_mode(service, device, registry_id, config, 0, NULL, 1, AT_PROBE_COMMAND_ATI, NULL);
 }
 
 int usb_observer_probe_status(io_service_t service, IOUSBDeviceInterface **device,
                               uint64_t registry_id, const struct descriptor_config *config) {
-    return run_mode(service, device, registry_id, config, 0, NULL, 2, AT_PROBE_COMMAND_AT);
+    return run_mode(service, device, registry_id, config, 0, NULL, 2, AT_PROBE_COMMAND_AT, NULL);
 }
 
 int usb_observer_probe_pdp(io_service_t service, IOUSBDeviceInterface **device,
                            uint64_t registry_id, const struct descriptor_config *config) {
-    return run_mode(service, device, registry_id, config, 0, NULL, 3, AT_PROBE_COMMAND_AT);
+    return run_mode(service, device, registry_id, config, 0, NULL, 3, AT_PROBE_COMMAND_AT, NULL);
 }
 
 int usb_observer_probe_data_support(io_service_t service, IOUSBDeviceInterface **device,
                                     uint64_t registry_id, const struct descriptor_config *config) {
-    return run_mode(service, device, registry_id, config, 0, NULL, 4, AT_PROBE_COMMAND_CGDATA_TEST);
+    return run_mode(service, device, registry_id, config, 0, NULL, 4, AT_PROBE_COMMAND_CGDATA_TEST, NULL);
+}
+
+int usb_observer_probe_signal(io_service_t service, IOUSBDeviceInterface **device,
+                              uint64_t registry_id, const struct descriptor_config *config,
+                              const volatile sig_atomic_t *prior_cancelled,
+                              struct status_probe_result *signal) {
+    if (!signal) return DJI_SYSTEM_ERROR;
+    memset(signal, 0, sizeof(*signal));
+    signal->stop = STATUS_STOP_IO_ERROR; /* until the run itself decides */
+    signal->stop_index = STATUS_PROBE_SLOTS;
+    return run_mode(service, device, registry_id, config, 0, prior_cancelled, 5, AT_PROBE_COMMAND_AT, signal);
 }

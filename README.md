@@ -84,7 +84,7 @@ On the test Mac (Apple Silicon, macOS 26.6) with the daemon installed:
 - Plug in again: reconnects automatically.
 - With the `adb` server running: stays connected (`children-check tolerated creator=adb`).
 - `sudo make uninstall`: removes the daemon and files.
-- Measured with `networkQuality`: **download about 3.6 Mbps, upload about 11 Mbps, idle latency about 70 ms** (first release: 1.6 / 8 Mbps, 270 ms). The relay now keeps four USB reads queued and loops about 700 times a second; data still arrives more slowly than it is read, so the remaining limit is most likely the LTE link at the test location or the modem's PPP (dial-up) mode. A comparison with a phone on the same SIM has not been done yet. See `docs/ppp-design.md`.
+- Measured with `networkQuality`: **download about 3.6 Mbps, upload about 11 Mbps, idle latency about 70 ms** (first release: 1.6 / 8 Mbps, 270 ms). The relay now keeps four USB reads queued and loops about 700 times a second; data still arrives more slowly than it is read, so the remaining limit is most likely the LTE link at the test location or the modem's PPP (dial-up) mode. A phone with the same SIM is faster at the same place and the plan is not throttled, so the modem's PPP mode is the likely limit. Each session logs one `up-signal ...` line (CSQ RSSI, LTE RSRP/RSRQ) before dialing. See `docs/ppp-design.md`.
 - Not tested: sleep/wake, long sessions (hours), other macOS versions or Macs.
 
 ## Risks

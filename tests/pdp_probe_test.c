@@ -328,7 +328,7 @@ int main(void) {
     HAS("status cmd=cgdcont out=0x03 in=0x84 write=ok bytes=12\n");
     HAS("pdp line=2 cid=1 type=\"IPV4V6\" apn=\"internet\" addr_present=1 addr_length=12 extra_fields=2\n");
     HAS("status cmd=cgdcont sent=1 reads=1 result=ok contexts=1\n");
-    HAS("probe status=0 commands_sent=1 stop=none stop_index=6 evidence=format-only protocol=unconfirmed\n");
+    HAS("probe status=0 commands_sent=1 stop=none stop_index=7 evidence=format-only protocol=unconfirmed\n");
     LACKS("10.123"); LACKS("45.67");
     HAS("pdp attribution=matched reason=format-only\n");
 

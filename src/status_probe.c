@@ -3,13 +3,13 @@
 
 #include <string.h>
 
-static const char *const NAMES[STATUS_PROBE_SLOTS] = {"cpin", "csq", "cops", "cereg", "cgdcont", "cgdata-test"};
+static const char *const NAMES[STATUS_PROBE_SLOTS] = {"cpin", "csq", "cops", "cereg", "cgdcont", "cgdata-test", "cesq"};
 /* Echo text (command without CR) and the response prefix each command owns. */
-static const char *const ECHOES[STATUS_PROBE_SLOTS] = {"AT+CPIN?", "AT+CSQ", "AT+COPS?", "AT+CEREG?", "AT+CGDCONT?", "AT+CGDATA=?"};
-static const char *const PREFIXES[STATUS_PROBE_SLOTS] = {"+CPIN:", "+CSQ:", "+COPS:", "+CEREG:", "+CGDCONT:", "+CGDATA:"};
+static const char *const ECHOES[STATUS_PROBE_SLOTS] = {"AT+CPIN?", "AT+CSQ", "AT+COPS?", "AT+CEREG?", "AT+CGDCONT?", "AT+CGDATA=?", "AT+CESQ"};
+static const char *const PREFIXES[STATUS_PROBE_SLOTS] = {"+CPIN:", "+CSQ:", "+COPS:", "+CEREG:", "+CGDCONT:", "+CGDATA:", "+CESQ:"};
 static const enum at_probe_command SLOT_COMMANDS[STATUS_PROBE_SLOTS] = {
     AT_PROBE_COMMAND_CPIN, AT_PROBE_COMMAND_CSQ, AT_PROBE_COMMAND_COPS, AT_PROBE_COMMAND_CEREG,
-    AT_PROBE_COMMAND_CGDCONT, AT_PROBE_COMMAND_CGDATA_TEST};
+    AT_PROBE_COMMAND_CGDCONT, AT_PROBE_COMMAND_CGDATA_TEST, AT_PROBE_COMMAND_CESQ};
 static const char CME[] = "+CME ERROR:";
 
 enum at_probe_command status_probe_command(unsigned index) {
@@ -127,12 +127,44 @@ static int print_cpin(FILE *s, const char *head, const uint8_t *v, size_t n) {
     return 1;
 }
 
-static int print_csq(FILE *s, const char *head, const uint8_t *v, size_t n) {
-    size_t pos = 0, a, an, b, bn;
+/* Up to 3 digits, already checked by take_number. */
+static unsigned number_value(const uint8_t *v, size_t start, size_t count) {
+    unsigned value = 0;
+    for (size_t k = 0; k < count; k++) value = value * 10u + (unsigned)(v[start + k] - '0');
+    return value;
+}
+
+/* Keeps the numbers of a fully parsed line, replacing any earlier line's. */
+static void keep_values(struct status_command_result *command, const uint8_t *v, const size_t *starts,
+                        const size_t *counts, unsigned count) {
+    for (unsigned k = 0; k < count && k < STATUS_PROBE_VALUES; k++)
+        command->value[k] = number_value(v, starts[k], counts[k]);
+    command->values = count;
+}
+
+static int print_csq(FILE *s, const char *head, const uint8_t *v, size_t n,
+                     struct status_command_result *command) {
+    size_t pos = 0, starts[2], counts[2];
     skip_spaces(v, n, &pos);
-    if (!take_number(v, n, &pos, 3, &a, &an) || !take_char(v, n, &pos, ',') ||
-        !take_number(v, n, &pos, 3, &b, &bn) || pos != n) return 0;
-    fprintf(s, "%s rssi=%.*s ber=%.*s\n", head, (int)an, (const char *)v + a, (int)bn, (const char *)v + b);
+    if (!take_number(v, n, &pos, 3, &starts[0], &counts[0]) || !take_char(v, n, &pos, ',') ||
+        !take_number(v, n, &pos, 3, &starts[1], &counts[1]) || pos != n) return 0;
+    keep_values(command, v, starts, counts, 2);
+    fprintf(s, "%s rssi=%.*s ber=%.*s\n", head, (int)counts[0], (const char *)v + starts[0],
+            (int)counts[1], (const char *)v + starts[1]);
+    return 1;
+}
+
+/* +CESQ: <rxlev>,<ber>,<rscp>,<ecno>,<rsrq>,<rsrp>, six 1..3 digit numbers. */
+static int print_cesq(FILE *s, const char *head, const uint8_t *v, size_t n,
+                      struct status_command_result *command) {
+    size_t pos = 0, starts[6], counts[6];
+    skip_spaces(v, n, &pos);
+    for (unsigned k = 0; k < 6; k++)
+        if ((k && !take_char(v, n, &pos, ',')) || !take_number(v, n, &pos, 3, &starts[k], &counts[k])) return 0;
+    if (pos != n) return 0;
+    keep_values(command, v, starts, counts, 6);
+    fprintf(s, "%s rxlev=%u ber=%u rscp=%u ecno=%u rsrq=%u rsrp=%u\n", head, command->value[0],
+            command->value[1], command->value[2], command->value[3], command->value[4], command->value[5]);
     return 1;
 }
 
@@ -414,13 +446,15 @@ static void print_reply(unsigned index, const uint8_t *bytes, size_t size, unsig
         size_t prefix = strlen(PREFIXES[index]);
         if (starts_with(line, length, PREFIXES[index])) {
             const uint8_t *value = line + prefix;
+            command->value_lines++;
             size_t value_length = length - prefix;
             int printed = 0;
             if (index == 0) printed = print_cpin(stream, head, value, value_length);
-            else if (index == 1) printed = print_csq(stream, head, value, value_length);
+            else if (index == 1) printed = print_csq(stream, head, value, value_length, command);
             else if (index == 2) printed = print_cops(stream, head, value, value_length);
             else if (index == 3) printed = print_cereg(stream, head, value, value_length);
             else if (index == STATUS_PROBE_PDP_INDEX) printed = print_cgdcont(stream, head, value, value_length);
+            else if (index == STATUS_PROBE_CESQ_INDEX) printed = print_cesq(stream, head, value, value_length, command);
             else {
                 if (!support_blocked) printed = print_cgdata_test(stream, head, value, value_length);
                 /* No resynchronization after unknown or malformed support syntax:
@@ -468,12 +502,15 @@ static const uint64_t *clock_sample(const struct at_probe_backend *b, uint64_t *
     return sample;
 }
 
-/* Runs fixed slots [first, first + count) in order, each sent at most once.
+/* Runs the listed fixed slots in order, each sent at most once.
  * Any slot that is not confirmed (own echo, then one final line, MATCHED, final OK)
  * ends the run: later slots are never sent. After a read timeout, or any other failure,
  * the same run does no further read, write or validate; only close/release run. */
 static int run_slots(const struct at_probe_backend *b, struct status_probe_result *result, FILE *stream,
-                     unsigned first, unsigned count) {
+                     const unsigned *slots, unsigned count) {
+    if (!slots || !count) return DJI_SYSTEM_ERROR;
+    for (unsigned k = 0; k < count; k++) if (slots[k] >= STATUS_PROBE_SLOTS) return DJI_SYSTEM_ERROR;
+    const unsigned first = slots[0];
     if (!b || !result || !b->now_ms || !b->cancelled || !b->prepare || !b->validate || !b->open ||
         !b->write || !b->read || !b->close || !b->release) return DJI_SYSTEM_ERROR;
     memset(result, 0, sizeof(*result));
@@ -506,10 +543,11 @@ static int run_slots(const struct at_probe_backend *b, struct status_probe_resul
     }
     uint64_t clock = 0;
     if (!clock_sample(b, &clock, NULL)) { status = DJI_SYSTEM_ERROR; result->stop = STATUS_STOP_CLOCK_ERROR; goto release; }
-    for (unsigned index = first; index < first + count; index++) {
+    for (unsigned position = 0; position < count; position++) {
+        const unsigned index = slots[position];
         struct status_command_result *command = &result->commands[index];
         result->stop_index = index;
-        if (index != first) {
+        if (position) {
             uint8_t check_out = 0, check_in = 0;
             status = b->validate(b->context, interface_id, 1, &check_out, &check_in);
             if (status == DJI_OK && (check_out != out_pipe || check_in != in_pipe)) status = DJI_GONE;
@@ -621,7 +659,8 @@ release:
     if (prepared) b->release(b->context);
 done:
     if (stream) {
-        for (unsigned index = first; index < first + count; index++) {
+        for (unsigned position = 0; position < count; position++) {
+            const unsigned index = slots[position];
             const struct status_command_result *command = &result->commands[index];
             fprintf(stream, "status cmd=%s sent=%u reads=%u result=%s", NAMES[index], command->sent,
                     command->reads, result_label(command->result));
@@ -639,13 +678,34 @@ done:
 }
 
 int status_probe_run(const struct at_probe_backend *b, struct status_probe_result *result, FILE *stream) {
-    return run_slots(b, result, stream, 0, STATUS_PROBE_COMMANDS);
+    static const unsigned slots[STATUS_PROBE_COMMANDS] = {0, 1, 2, 3};
+    return run_slots(b, result, stream, slots, STATUS_PROBE_COMMANDS);
 }
 
 int pdp_probe_run(const struct at_probe_backend *b, struct status_probe_result *result, FILE *stream) {
-    return run_slots(b, result, stream, STATUS_PROBE_PDP_INDEX, 1);
+    static const unsigned slots[1] = {STATUS_PROBE_PDP_INDEX};
+    return run_slots(b, result, stream, slots, 1);
 }
 
 int data_support_probe_run(const struct at_probe_backend *b, struct status_probe_result *result, FILE *stream) {
-    return run_slots(b, result, stream, STATUS_PROBE_DATA_SUPPORT_INDEX, 1);
+    static const unsigned slots[1] = {STATUS_PROBE_DATA_SUPPORT_INDEX};
+    return run_slots(b, result, stream, slots, 1);
+}
+
+static int discard_write(void *cookie, const char *bytes, int size) {
+    (void)cookie; (void)bytes;
+    return size;
+}
+
+int signal_probe_run(const struct at_probe_backend *b, struct status_probe_result *result, FILE *stream) {
+    static const unsigned slots[2] = {1, STATUS_PROBE_CESQ_INDEX};
+    /* Values are kept while lines are printed, so a sink stands in for no stream. */
+    FILE *sink = stream ? stream : funopen(NULL, NULL, discard_write, NULL, NULL);
+    if (!sink) {
+        if (result) { memset(result, 0, sizeof(*result)); result->stop = STATUS_STOP_IO_ERROR; }
+        return DJI_SYSTEM_ERROR;
+    }
+    int status = run_slots(b, result, sink, slots, 2);
+    if (!stream && fclose(sink) != 0 && status == DJI_OK) status = DJI_SYSTEM_ERROR;
+    return status;
 }

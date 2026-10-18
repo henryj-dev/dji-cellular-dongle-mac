@@ -37,7 +37,9 @@ enum at_probe_command {
     /* --probe-pdp only. */
     AT_PROBE_COMMAND_CGDCONT,
     /* --probe-data-support only: test command, never starts a data connection. */
-    AT_PROBE_COMMAND_CGDATA_TEST
+    AT_PROBE_COMMAND_CGDATA_TEST,
+    /* Signal query before a PPP session: read-only, never changes modem state. */
+    AT_PROBE_COMMAND_CESQ
 };
 
 enum ati_result {
