@@ -90,7 +90,7 @@ struct ppp_supervisor {
      * (uncached) validations and in whole USB write calls (write time also
      * includes any validation it triggered).
      * Written by the bound adapter, never used for any decision. */
-    uint64_t usb_input_reads, usb_empty_polls, usb_validate_us, usb_write_us;
+    uint64_t usb_input_reads, usb_empty_polls, usb_validate_us, usb_write_us, usb_in_discarded;
     /* Diagnostics only, never used for any decision: the first USB adapter
      * error label, written by the bound adapter. Kept here because the adapter
      * is freed before the supervisor and must not be read afterwards. */

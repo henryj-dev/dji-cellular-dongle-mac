@@ -29,8 +29,11 @@
  * so it ends on its own and removes its own keys first. */
 #define UP_ECHO_INTERVAL_MS 10000u
 #define UP_ECHO_FAILURE 3u
-_Static_assert(UP_ECHO_INTERVAL_MS * (UP_ECHO_FAILURE + 1) < UP_READ_TIMEOUT_MS,
-               "LCP echo failure must be detected before the USB IN timeout");
+/* Read-ahead: the oldest queued IN request may be (slots-1) echo intervals
+ * older than the last data on an idle link (see ppp_usb.h). */
+_Static_assert(UP_ECHO_INTERVAL_MS * (UP_ECHO_FAILURE + 1) +
+               UP_ECHO_INTERVAL_MS * (PPP_USB_IN_SLOTS_DEFAULT - 1) < UP_READ_TIMEOUT_MS,
+               "LCP echo failure must be detected before the oldest USB IN request times out");
 /* Stop through TERM well before the supervisor's own session deadline KILL. */
 #define UP_CEILING_MS (UP_SESSION_MS - 600000)
 #define UP_ATTRIBUTION_MS 30000u
@@ -443,7 +446,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
     const struct ppp_nego_summary *n = &k->negotiation;
     char frames_rx[24] = "unproven", frames_tx[24] = "unproven", echo[24] = "unproven", reply[24] = "unproven";
     char in_bytes[24] = "unproven", in_reads[24] = "unproven", empty[24] = "unproven";
-    char validate_ms[24] = "unproven", write_ms[24] = "unproven", slices[24];
+    char validate_ms[24] = "unproven", write_ms[24] = "unproven", slices[24], discarded[24] = "unproven";
     (void)snprintf(slices, sizeof(slices), "%llu", (unsigned long long)c.loop_slices);
     if (fresh) {
         (void)snprintf(frames_rx, sizeof(frames_rx), "%llu", (unsigned long long)n->frames[PPP_NEGO_PEER]);
@@ -457,6 +460,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         (void)snprintf(empty, sizeof(empty), "%llu", (unsigned long long)k->usb_empty_polls);
         (void)snprintf(validate_ms, sizeof(validate_ms), "%llu", (unsigned long long)(k->usb_validate_us / 1000));
         (void)snprintf(write_ms, sizeof(write_ms), "%llu", (unsigned long long)(k->usb_write_us / 1000));
+        (void)snprintf(discarded, sizeof(discarded), "%llu", (unsigned long long)k->usb_in_discarded);
     }
     char resets[16] = "none", losses[16] = "none", restores[16] = "none";
     if (c.link_started) {
@@ -475,7 +479,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         " sc-pre=%s pppd-leftover=%s sc-reap=%s sc-post=%s primary-restored=%s"
         " local=%s session-error=%s cleanup=%s clock=%s child=%s child-exit=%s term-count=%u kill-count=%u"
         " callback-quiet=%s handlers=%s supervisor-error=%s usb-error=%s usb-error-site=%s"
-        " ppp-lcp=%s ppp-ipcp=%s ppp-terminate=%s ppp-lcp-echo=%s ppp-lcp-echo-reply=%s ppp-frames-rx=%s ppp-frames-tx=%s usb-in-bytes=%s usb-in-reads=%s usb-in-empty-polls=%s usb-validate-ms=%s usb-write-ms=%s loop-slices=%s"
+        " ppp-lcp=%s ppp-ipcp=%s ppp-terminate=%s ppp-lcp-echo=%s ppp-lcp-echo-reply=%s ppp-frames-rx=%s ppp-frames-tx=%s usb-in-bytes=%s usb-in-reads=%s usb-in-empty-polls=%s usb-validate-ms=%s usb-write-ms=%s usb-in-discarded=%s loop-slices=%s"
         " remote-termination=unproven next-run-cleanup=%s %s\n",
         result == 0 ? "stopped" : result == 3 ? "ended" : "cleanup-required", c.reason,
         c.connected ? "yes" : "no", connected_ms, ready, stable, resets, losses, restores,
@@ -493,7 +497,7 @@ static int lte_up_run(int argc, char **argv, FILE *output, const struct trial_ba
         fresh ? UP_NAME(up_usb_sites, k->usb_error_site) : "unproven",
         fresh ? UP_NAME(up_lcp, n->lcp) : "unproven", fresh ? UP_NAME(up_ncp, n->ipcp) : "unproven",
         fresh ? UP_NAME(up_terminate, n->terminate) : "unproven",
-        echo, reply, frames_rx, frames_tx, in_bytes, in_reads, empty, validate_ms, write_ms, slices, clean ? "not-required" : "required", diagnostic);
+        echo, reply, frames_rx, frames_tx, in_bytes, in_reads, empty, validate_ms, write_ms, discarded, slices, clean ? "not-required" : "required", diagnostic);
     (void)discovery;
     /* An unproven cleanup outranks a lost output line. */
     return result == 4 ? 4 : c.output_error ? 1 : result;

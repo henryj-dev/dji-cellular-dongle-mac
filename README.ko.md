@@ -87,9 +87,9 @@ sudo make uninstall
 - 다시 꽂기: 자동 재연결
 - `adb` 서버가 켜져 있어도 연결 유지(`children-check tolerated creator=adb`)
 - `sudo make uninstall`: 데몬과 파일 제거
-- `networkQuality` 실측: **다운로드 약 1.9 Mbps, 업로드 약 11.6 Mbps, 유휴 지연 약 120ms** (첫 공개 때 1.6 / 8 Mbps, 270ms)
-  - 진단 결과 병목은 모뎀이 아니라 이 도구의 USB 중계 루프입니다. USB 읽기를 한 번에 하나만 걸고, 루프 한 바퀴에 약 4ms가 걸립니다.
-  - 다음 작업으로 USB 읽기 여러 개 동시 대기와 이벤트 기반 대기를 계획하고 있습니다(`docs/ppp-design.md`).
+- `networkQuality` 실측: **다운로드 약 3.6 Mbps, 업로드 약 11 Mbps, 유휴 지연 약 70ms** (첫 공개 때 1.6 / 8 Mbps, 270ms)
+  - 중계는 이제 USB 읽기 4개를 미리 걸어 두고 초당 약 700바퀴 돕니다. 그래도 데이터가 읽는 속도보다 느리게 들어옵니다.
+  - 남은 한계는 시험한 자리의 LTE 속도이거나 모뎀의 PPP(다이얼업) 모드일 가능성이 큽니다. 같은 SIM으로 휴대폰과 비교 측정은 아직 하지 않았습니다. 자세한 내용은 `docs/ppp-design.md`를 보세요.
 - 시험하지 않은 것: 잠자기·깨우기, 몇 시간 이상 긴 세션, 다른 macOS 버전이나 다른 맥
 
 ## 위험

@@ -4,6 +4,12 @@
 #include "usb_session.h"
 #include "ppp_supervisor.h"
 
+/* Bulk IN requests kept queued by the PPP adapter. Each one's 75 s timeout
+ * runs from its own submission, so on an idle link (LCP echo every 10 s) the
+ * oldest can be (slots-1)*10 s older than the last data; ppp_lte_up asserts
+ * that pppd's echo failure still comes first. */
+#define PPP_USB_IN_SLOTS_DEFAULT 4u
+
 /* Internal, not linked to the production CLI. Acquire on the sole owner thread
  * and its CFRunLoop. Session and fixed IN buffer are owned until release.
  * timeout_ms is the OUT (write/connect hook) timeout; NULL chooses 1000 ms.

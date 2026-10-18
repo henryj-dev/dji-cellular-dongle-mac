@@ -491,7 +491,7 @@ verify-offline: all ppp-usb-sdk ppp-auth-sdk ppp-lte-sdk build/ppp_lte_once buil
 	grep -q -- '--probe-data-support' $(OFFLINE_LOG_DIR)/help.stdout
 	! grep -nE 'ClearPipeStall|ResetDevice|ResetPipe|ReEnumerate|SetConfiguration|SetAlternateInterface|ControlRequest|DeviceRequest|USBDeviceOpen|OpenSeize|WritePipeAsync|WriteIsochPipe|kIOServiceInteractionAllowed' src/*.c src/*.h
 	! grep -nE 'ReadPipeAsync|AbortPipe|CreateInterfaceAsyncEventSource' $$(find src -type f \( -name '*.c' -o -name '*.h' \) ! -name ppp_usb.c)
-	test "$$(grep -c -- '->ReadPipeAsyncTO(interface, in, a->input, sizeof(a->input),' src/ppp_usb.c)" -eq 1
+	test "$$(grep -c -- '->ReadPipeAsyncTO(interface, in, slot->input, sizeof(slot->input),' src/ppp_usb.c)" -eq 1
 	test "$$(grep -c -- '->AbortPipe(interface, a->in_pipe)' src/ppp_usb.c)" -eq 1
 	test "$$(grep -c -- '->CreateInterfaceAsyncEventSource(interface, &a->source)' src/ppp_usb.c)" -eq 1
 	test "$$(grep -Ec 'ReadPipeAsync|AbortPipe|CreateInterfaceAsyncEventSource' src/ppp_usb.c)" -eq 3

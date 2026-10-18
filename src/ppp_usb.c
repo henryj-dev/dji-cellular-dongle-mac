@@ -8,13 +8,30 @@
 #include <string.h>
 #include <time.h>
 
+/* One bulk IN request: buffer, result, and where it is in its life. */
+struct ppp_usb_slot {
+    struct ppp_usb *adapter;
+    unsigned char input[PPP_SUPERVISOR_BUFFER];
+    uintptr_t count;
+    IOReturn completion;
+    int pending, received, completed;
+};
+#ifndef PPP_USB_IN_SLOTS
+#define PPP_USB_IN_SLOTS PPP_USB_IN_SLOTS_DEFAULT
+#endif
+#define PPP_USB_IN_SLOTS_MAX 4u
 struct ppp_usb {
     struct usb_session *session;
     struct ppp_supervisor *supervisor;
     CFRunLoopRef loop;
     CFRunLoopSourceRef source;
     pthread_t owner;
-    unsigned char input[PPP_SUPERVISOR_BUFFER];
+    /* IN requests in submission order: ring head..head+used-1. One slot keeps
+     * the former single-read behaviour; more keep reads queued in the host
+     * controller so the modem's short transfers follow each other. */
+    struct ppp_usb_slot slots[PPP_USB_IN_SLOTS_MAX];
+    unsigned in_slots, head, used;
+    uint64_t in_discarded; /* successful IN not yet delivered at stop, dropped */
     uint32_t timeout, read_timeout; /* OUT and IN transfer timeouts, kept separate. */
     uint8_t in_pipe;
     /* The last successful full validation and the pipes it proved; reused for
@@ -22,10 +39,10 @@ struct ppp_usb {
     uint64_t validated_us;
     uint32_t validate_interval_us;
     uint8_t valid_out, valid_in;
-    uintptr_t count;
-    IOReturn error, completion;
+    IOReturn error;
     unsigned submissions, callbacks, aborts;
-    int pending, received, completed, stopping, pumping, closed, close_error, connect_attempted;
+    /* pending: outstanding IN requests; received: callbacks not yet pumped. */
+    int pending, received, stopping, pumping, closed, close_error, connect_attempted;
     int dispose_active;
     enum ppp_usb_error_kind error_kind;
     enum ppp_usb_error_site error_site;
@@ -65,31 +82,41 @@ static enum ppp_usb_error_kind write_kind(int status) {
            status == DJI_GONE ? PPP_USB_ERROR_NO_DEVICE : PPP_USB_ERROR_OTHER;
 }
 static void read_complete(void *context, IOReturn result, void *count) {
-    struct ppp_usb *a = context;
+    struct ppp_usb_slot *slot = context;
+    struct ppp_usb *a = slot->adapter;
     /* No supervisor calls, free, close, or pending decrement here. Pump observes
      * received only after SDK dispatch has returned from this callback. */
     a->callbacks++;
-    a->completion = result;
-    a->count = result == kIOReturnSuccess ? (uintptr_t)count : 0;
-    a->received = 1;
+    slot->completion = result;
+    slot->count = result == kIOReturnSuccess ? (uintptr_t)count : 0;
+    slot->received = 1;
+    a->received++;
+}
+static struct ppp_usb_slot *slot_at(struct ppp_usb *a, unsigned offset) {
+    return &a->slots[(a->head + offset) % a->in_slots];
 }
 static void pump(struct ppp_usb *a) {
     a->pumping = 1;
-    (void)CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true);
+    /* once=true handles one event per call: up to one call per outstanding read. */
+    unsigned calls = a->pending > 1 ? (unsigned)a->pending : 1;
+    for (unsigned i = 0; i < calls; i++)
+        if (CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true) != kCFRunLoopRunHandledSource) break;
     a->pumping = 0;
-    if (a->received) {
-        a->received = 0;
-        a->pending = 0;
-        a->completed = 1;
-        if (a->completion != kIOReturnSuccess) {
+    for (unsigned i = 0; i < a->used && a->received; i++) {
+        struct ppp_usb_slot *slot = slot_at(a, i);
+        if (!slot->received) continue;
+        slot->received = 0; a->received--;
+        slot->pending = 0; a->pending--;
+        slot->completed = 1;
+        if (slot->completion != kIOReturnSuccess) {
             /* Only cancellation we requested is a normal end; a timeout stays fatal. */
-            int aborted = a->completion == kIOReturnAborted || a->completion == kIOUSBTransactionReturned;
+            int aborted = slot->completion == kIOReturnAborted || slot->completion == kIOUSBTransactionReturned;
             if (!(a->stopping && aborted))
-                remember_error(a, a->completion, PPP_USB_ERROR_NONE, PPP_USB_SITE_COMPLETION);
+                remember_error(a, slot->completion, PPP_USB_ERROR_NONE, PPP_USB_SITE_COMPLETION);
         }
-        else if (!a->count)
+        else if (!slot->count)
             remember_error(a, kIOReturnBadArgument, PPP_USB_ERROR_ZERO_LENGTH, PPP_USB_SITE_COMPLETION);
-        else if (a->count > sizeof(a->input))
+        else if (slot->count > sizeof(slot->input))
             remember_error(a, kIOReturnBadArgument, PPP_USB_ERROR_OVERSIZE, PPP_USB_SITE_COMPLETION);
     }
 }
@@ -119,46 +146,63 @@ static int adapter_validate(struct ppp_usb *a, uint8_t *out, uint8_t *in) {
     else a->validated_us = 0;
     return status;
 }
+/* Submit IN requests until every slot is in use. One validation covers the
+ * batch. 0 on success (also when nothing was needed), -1 after an error. */
+static int top_up(struct ppp_usb *a) {
+    if (a->used >= a->in_slots) return 0;
+    uint8_t out = 0, in = 0;
+    if (adapter_validate(a, &out, &in) != DJI_OK) {
+        remember_error(a, kIOReturnNoDevice, PPP_USB_ERROR_NONE, PPP_USB_SITE_VALIDATE);
+        return -1;
+    }
+    IOUSBInterfaceInterface182 **interface = usb_session_interface(a->session);
+    a->in_pipe = in;
+    while (a->used < a->in_slots) {
+        struct ppp_usb_slot *slot = slot_at(a, a->used);
+        slot->adapter = a;
+        slot->pending = 1; slot->completed = 0; slot->count = 0;
+        a->pending++; a->used++;
+        a->submissions++;
+        IOReturn result = (*interface)->ReadPipeAsyncTO(interface, in, slot->input, sizeof(slot->input),
+                                                      a->read_timeout, a->read_timeout, read_complete, slot);
+        if (result != kIOReturnSuccess) {
+            /* Failed submission has no outstanding SDK request. */
+            slot->pending = 0; a->pending--; a->used--;
+            remember_error(a, result, PPP_USB_ERROR_NONE, PPP_USB_SITE_SUBMIT);
+            return -1;
+        }
+    }
+    return 0;
+}
 static struct offline_io usb_read(void *context, unsigned char *data, size_t capacity) {
     struct ppp_usb *a = context;
     if (!owner(a) || a->pumping || a->closed || a->stopping || !data || !capacity)
         return (struct offline_io){OFFLINE_IO_ERROR, 0};
     pump(a);
     if (a->error) return (struct offline_io){OFFLINE_IO_ERROR, 0};
-    if (a->completed) {
-        if (a->count > capacity) {
+    struct ppp_usb_slot *head = a->used ? slot_at(a, 0) : NULL;
+    if (head && head->completed) {
+        if (head->count > capacity) {
             remember_error(a, kIOReturnBadArgument, PPP_USB_ERROR_OVERSIZE, PPP_USB_SITE_COMPLETION);
             return (struct offline_io){OFFLINE_IO_ERROR, 0};
         }
-        memcpy(data, a->input, a->count);
-        size_t count = a->count;
-        a->completed = 0;
-        a->count = 0;
+        memcpy(data, head->input, head->count);
+        size_t count = head->count;
+        head->completed = 0;
+        head->count = 0;
+        a->head = (a->head + 1) % a->in_slots;
+        a->used--;
+        /* Read ahead: refill at once so the next transfer is already queued.
+         * A failure is remembered for the next call; this data is complete. */
+        if (a->in_slots > 1) (void)top_up(a);
         return (struct offline_io){OFFLINE_IO_OK, count};
     }
     if (a->pending) {
         /* Still outstanding after the pump: no data from the modem yet, or the
          * completion was not dispatched in this pump (an upper bound only). */
         if (a->supervisor) a->supervisor->usb_empty_polls++;
-    } else {
-        uint8_t out = 0, in = 0;
-        if (adapter_validate(a, &out, &in) != DJI_OK) {
-            remember_error(a, kIOReturnNoDevice, PPP_USB_ERROR_NONE, PPP_USB_SITE_VALIDATE);
-            return (struct offline_io){OFFLINE_IO_ERROR, 0};
-        }
-        IOUSBInterfaceInterface182 **interface = usb_session_interface(a->session);
-        a->in_pipe = in;
-        a->pending = 1;
-        a->submissions++;
-        IOReturn result = (*interface)->ReadPipeAsyncTO(interface, in, a->input, sizeof(a->input),
-                                                      a->read_timeout, a->read_timeout, read_complete, a);
-        if (result != kIOReturnSuccess) {
-            /* Failed submission has no outstanding SDK request. */
-            a->pending = 0;
-            remember_error(a, result, PPP_USB_ERROR_NONE, PPP_USB_SITE_SUBMIT);
-            return (struct offline_io){OFFLINE_IO_ERROR, 0};
-        }
-    }
+        if (a->in_slots > 1 && top_up(a)) return (struct offline_io){OFFLINE_IO_ERROR, 0};
+    } else if (top_up(a)) return (struct offline_io){OFFLINE_IO_ERROR, 0};
     return (struct offline_io){OFFLINE_IO_AGAIN, 0};
 }
 static struct offline_io usb_write(void *context, const unsigned char *data, size_t length) {
@@ -223,10 +267,20 @@ static struct ppp_quiet usb_poll_quiet(void *context) {
     struct ppp_usb *a = context;
     if (!owner(a) || a->pumping || !a->stopping) return (struct ppp_quiet){0, 1};
     pump(a);
-    /* Quiet only ends callback ownership. A successful IN retained across
-     * quiesce was never delivered and must fail drain before release. */
-    if (a->completed && a->completion == kIOReturnSuccess && a->count)
-        remember_error(a, kIOReturnError, PPP_USB_ERROR_OTHER, PPP_USB_SITE_COMPLETION);
+    /* Quiet only ends callback ownership. With a single slot, a successful IN
+     * retained across quiesce was never delivered and must fail drain before
+     * release. With read-ahead, completed reads not yet delivered when the
+     * stop came (queued ahead or racing it) are expected: they are dropped,
+     * never delivered, and counted (usb-in-discarded). */
+    for (unsigned i = 0; i < a->used; i++) {
+        struct ppp_usb_slot *slot = slot_at(a, i);
+        if (!slot->completed || slot->completion != kIOReturnSuccess || !slot->count) continue;
+        if (a->in_slots > 1) {
+            slot->completed = 0; slot->count = 0; a->in_discarded++;
+            if (a->supervisor) a->supervisor->usb_in_discarded++;
+        }
+        else remember_error(a, kIOReturnError, PPP_USB_ERROR_OTHER, PPP_USB_SITE_COMPLETION);
+    }
     return (struct ppp_quiet){!a->pending, !!a->error};
 }
 static int usb_close(void *context) {
@@ -263,6 +317,7 @@ int ppp_usb_acquire(io_service_t service, IOUSBDeviceInterface **device,
     a->timeout = timeout;
     a->read_timeout = read_timeout;
     a->validate_interval_us = PPP_USB_VALIDATE_INTERVAL_US;
+    a->in_slots = PPP_USB_IN_SLOTS < 1 ? 1 : PPP_USB_IN_SLOTS > PPP_USB_IN_SLOTS_MAX ? PPP_USB_IN_SLOTS_MAX : PPP_USB_IN_SLOTS;
     a->owner = pthread_self();
     a->loop = CFRunLoopGetCurrent();
     CFRetain(a->loop);

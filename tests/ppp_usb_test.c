@@ -33,6 +33,9 @@ static struct {
     size_t input_length, output_length;
     void *buffer, *refcon;
     IOAsyncCallback1 callback;
+    /* multi: several outstanding IN requests, completed oldest first. */
+    int multi; unsigned depth;
+    void *buffers[8], *refcons[8]; IOAsyncCallback1 callbacks_queue[8]; UInt32 sizes[8];
     UInt32 requested;
     /* Expected IN timeout (0 means the adapter default 1000) and the last
      * no-data timeouts the fake SDK saw for IN and OUT. */
@@ -173,10 +176,18 @@ static IOReturn write_pipe(void *self, UInt8 pipe, void *buffer, UInt32 size, UI
 }
 static IOReturn async_read(void *self, UInt8 pipe, void *buffer, UInt32 size,
                            UInt32 no_data, UInt32 completion, IOAsyncCallback1 callback, void *context) {
-    (void)self; CHECK(pipe == 2 && size == 4096 && !sdk.pending && !sdk.dispatch && no_data == completion);
+    (void)self; CHECK(pipe == 2 && size == 4096 && (sdk.multi || !sdk.pending) && !sdk.dispatch && no_data == completion);
     CHECK(no_data == (sdk.read_timeout ? sdk.read_timeout : 1000u));
     sdk.submits++; sdk.last_read_timeout = no_data;
     if (sdk.submit_error) return sdk.submit_error;
+    if (sdk.multi) {
+        CHECK(sdk.depth < 8);
+        sdk.buffers[sdk.depth] = buffer; sdk.refcons[sdk.depth] = context;
+        sdk.callbacks_queue[sdk.depth] = callback; sdk.sizes[sdk.depth] = size; sdk.depth++;
+        sdk.buffer = sdk.buffers[0]; sdk.requested = sdk.sizes[0];
+        sdk.callback = sdk.callbacks_queue[0]; sdk.refcon = sdk.refcons[0];
+        sdk.pending = 1; return KERN_SUCCESS;
+    }
     sdk.buffer = buffer; sdk.requested = size; sdk.callback = callback; sdk.refcon = context;
     sdk.pending = 1; return KERN_SUCCESS;
 }
@@ -195,6 +206,18 @@ static void dispatch_callback(void) {
     CHECK(sdk.closes == closes && sdk.releases == releases && sdk.removes == removes);
     assert_dispatch_retained();
     sdk.dispatch = 0; sdk.pending = 0; sdk.queued = 0; sdk.callbacks++;
+    if (sdk.multi) {
+        for (unsigned i = 1; i < sdk.depth; i++) {
+            sdk.buffers[i - 1] = sdk.buffers[i]; sdk.refcons[i - 1] = sdk.refcons[i];
+            sdk.callbacks_queue[i - 1] = sdk.callbacks_queue[i]; sdk.sizes[i - 1] = sdk.sizes[i];
+        }
+        sdk.depth--;
+        sdk.pending = sdk.depth > 0;
+        if (sdk.depth) {
+            sdk.buffer = sdk.buffers[0]; sdk.requested = sdk.sizes[0];
+            sdk.callback = sdk.callbacks_queue[0]; sdk.refcon = sdk.refcons[0];
+        }
+    }
 }
 static IOReturn abort_pipe(void *self, UInt8 pipe) {
     (void)self; CHECK(pipe == 2 && sdk.pending); sdk.aborts++;
@@ -215,7 +238,7 @@ static IOReturn async_source(void *self, CFRunLoopSourceRef *source) {
 static SInt32 run_loop(CFStringRef mode, CFTimeInterval seconds, Boolean once) {
     (void)mode; CHECK(seconds == 0 && once); runner_pumps++;
     if (runner_reentry) assert_runner_rejected();
-    if (sdk.pending && sdk.queued) dispatch_callback();
+    if (sdk.pending && sdk.queued) { dispatch_callback(); if (sdk.multi) return kCFRunLoopRunHandledSource; }
     return kCFRunLoopRunTimedOut;
 }
 static void add_source(CFRunLoopRef loop, CFRunLoopSourceRef source, CFStringRef mode) {
@@ -243,6 +266,9 @@ static void remove_source(CFRunLoopRef loop, CFRunLoopSourceRef source, CFString
 /* Existing checks keep the former validate-every-transfer behaviour; the
  * cached window is exercised separately in validate_interval_test. */
 #define PPP_USB_VALIDATE_INTERVAL_US 0u
+/* Existing checks keep the former single outstanding read; read-ahead slots
+ * are exercised separately in read_ahead_test. */
+#define PPP_USB_IN_SLOTS 1u
 #include "../src/ppp_usb.c"
 
 /* Only the new implementation's fixed-start call is redirected. Production
@@ -384,7 +410,8 @@ static void runner_boundary_signal(void) {
 }
 static void assert_dispatch_retained(void) {
     CHECK(live && live->pending && live->received);
-    CHECK(live->count == (sdk.completion_error ? 0 : sdk.count));
+    /* The slot actually being dispatched, wherever the ring head is. */
+    CHECK(((struct ppp_usb_slot *)sdk.refcon)->count == (sdk.completion_error ? 0 : sdk.count));
     if (sdk.dispose_reentry) assert_dispose_rejected();
     if (session_reentry) assert_session_rejected();
     if (runner_reentry) assert_runner_rejected();
@@ -554,6 +581,43 @@ static void cached_write_test(void) {
     CHECK(sdk.writes == writes + 4);
     supervisor.ready = supervisor.connected = 0; supervisor.stream.ready = 0;
     dispose(&peer);
+}
+/* Read-ahead: four requests stay queued, data comes out in submission order,
+ * and a stop drops a completion that raced it instead of failing. */
+static void read_ahead_test(void) {
+    reset(); sdk.multi = 1;
+    struct ppp_supervisor supervisor = {0};
+    struct ppp_peer peer = acquire(&supervisor);
+    live->in_slots = 4; live->validate_interval_us = 250000; live->validated_us = 0;
+    unsigned char data[64];
+    unsigned scans = sdk.child_scans;
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_AGAIN);
+    CHECK(sdk.depth == 4 && live->pending == 4 && live->used == 4 && sdk.submits == 4);
+    for (unsigned char i = 0; i < 10; i++) {
+        unsigned char byte = (unsigned char)('a' + i);
+        queue_result(&byte, 1, 0, 1);
+        struct offline_io got = peer.read(peer.context, data, sizeof(data));
+        CHECK(got.code == OFFLINE_IO_OK && got.count == 1 && data[0] == byte);
+        CHECK(sdk.depth == 4 && live->pending == 4 && live->used == 4);
+    }
+    CHECK(sdk.submits == 14 && sdk.child_scans == scans + 1 && supervisor.usb_empty_polls == 0);
+    /* Nothing arrived: an empty poll, nothing new submitted. */
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_AGAIN && sdk.submits == 14);
+    CHECK(supervisor.usb_empty_polls == 1);
+    /* Stop: one success races the abort, the rest come back aborted. */
+    CHECK(peer.quiesce(peer.context) == 0 && sdk.aborts == 1);
+    unsigned char late = 'z';
+    queue_result(&late, 1, 0, 1);
+    struct ppp_quiet quiet = peer.poll_quiet(peer.context);
+    CHECK(!quiet.quiet && !quiet.error && live->in_discarded == 1 && supervisor.usb_in_discarded == 1);
+    while (sdk.pending) {
+        queue_result(NULL, 0, kIOReturnAborted, UINTPTR_MAX);
+        quiet = peer.poll_quiet(peer.context);
+    }
+    CHECK(quiet.quiet && !quiet.error && !live->pending && !live->error);
+    CHECK(peer.close(peer.context) == 0 && sdk.closes == 1);
+    peer.release(peer.context); live = NULL;
+    sdk.multi = 0; balanced();
 }
 static void acquisition_test(void) {
     for (int i = 1; i <= 8; i++) {
@@ -1068,7 +1132,7 @@ static void undelivered_completion_test(const char *path, int stored) {
     if (stored) {
         queue_result(&byte, 1, kIOReturnSuccess, 1);
         pump(live); /* Completion returned, but no peer read delivered it. */
-        CHECK(live->completed && live->count == 1 && !live->pending && !live->error);
+        CHECK(live->slots[live->head].completed && live->slots[live->head].count == 1 && !live->pending && !live->error);
     }
     CHECK(ppp_supervisor_stop(&s) == 0 && ppp_supervisor_peer_done(&s) == 0);
     uint64_t deadline = wall() + 3000;
@@ -2021,7 +2085,7 @@ int main(int argc, char **argv) {
     session_error_wait_test(argv[1]); session_usb_label_test(argv[1]); session_owner_test(argv[1]);
     runner_inputs_test(argv[1]); runner_install_restore_test(argv[1]);
     runner_wait_signal_test(argv[1]); runner_running_wait_test(argv[1]);
-    children_label_test(); adb_child_test(); validate_interval_test(); cached_write_test(); acquisition_test(); completion_test(); usb_error_label_test(); cancellation_test(); wrong_owner_test(); probe_pointer_test();
+    children_label_test(); adb_child_test(); validate_interval_test(); cached_write_test(); read_ahead_test(); acquisition_test(); completion_test(); usb_error_label_test(); cancellation_test(); wrong_owner_test(); probe_pointer_test();
     dispose_acquisition_test(); dispose_start_failure_test(argv[1]); dispose_completion_test();
     dispose_rejection_test(); dispose_close_test(); asynchronous_exec_failure_test();
     connect_hook_test(); observed_usb_test(argv[1], 0); observed_usb_test(argv[1], 1);
