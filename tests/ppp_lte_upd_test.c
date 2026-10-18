@@ -46,6 +46,7 @@ static struct {
     int control_blocked, control_closed, client_open, root_only;
     unsigned client_closes;
     char status_json[UPD_STATUS_JSON];
+    uint64_t last_write_at, max_write_gap, heartbeat_writes;
     const struct command *commands;
     unsigned command_count, command_next;
     size_t client_offset;
@@ -126,7 +127,12 @@ static void fake_sleep(void *context, unsigned ms) { (void)context; CHECK(ms <= 
 static int64_t fake_now_wall(void *context) { (void)context; return WALL_BASE + (int64_t)(f.now / 1000); }
 /* Every written status: one line, fixed shape, only plain JSON characters. */
 static int fake_write_status(void *context, const char *json, size_t length) {
-    (void)context; f.status_writes++;
+    (void)context;
+    if (f.status_writes && f.now - f.last_write_at > f.max_write_gap) f.max_write_gap = f.now - f.last_write_at;
+    /* Same body apart from "updated": a heartbeat. */
+    const char *stamp = strstr(json, "\"updated\":");
+    if (f.status_writes && stamp && !strncmp(json, f.status_json, (size_t)(stamp - json))) f.heartbeat_writes++;
+    f.status_writes++; f.last_write_at = f.now;
     int bad = !length || length >= sizeof(f.status_json) || strlen(json) != length || json[length - 1] != '\n' ||
         strncmp(json, "{\"version\":1,\"state\":\"", 22) || strstr(json, "4321") || strstr(json, "/");
     for (size_t i = 0; i + 1 < length; i++)
@@ -760,9 +766,18 @@ int main(void) {
     CHECK(starts(f.replies, "error=bad-request\nerror=bad-request\n{\"version\":1,") && occurrences("command=invalid") == 2);
     CHECK(f.reply_count == 3 && f.reply_at[1] > f.reply_at[0] && f.reply_at[2] > f.reply_at[1]);
 
-    /* 36: the native backend on a real temporary tree under build/ (no root:
+    /* 36: a long unchanged session still rewrites the status once per
+     * heartbeat interval (only "updated" moves), never once per slice. */
+    reset(36); f.plug_at = 0; f.stop_at = 200000;
+    static const struct script s36[] = {START_CLEAN, {"--up", NULL, 6000, 1000000, 3, 0, 0, 3000, 0, 0, 0, 0}};
+    run(s36, 2);
+    CHECK(f.max_write_gap >= UPD_STATUS_HEARTBEAT_MS && f.max_write_gap <= UPD_STATUS_HEARTBEAT_MS + 1000);
+    CHECK(f.heartbeat_writes >= 3 && f.heartbeat_writes <= 4 && f.status_writes <= 14 && !f.status_bad);
+    CHECK(f.terms == 1 && f.status_removed == 1);
+
+    /* 37: the native backend on a real temporary tree under build/ (no root:
      * the expected owner is this user, the admin group is this user's group). */
-    reset(36);
+    reset(37);
     native_tests();
     printf("lte-upd checks=%u failures=%u (virtual clock; no device, spawn or launchd)\n", checks, failures);
     return failures ? 1 : 0;

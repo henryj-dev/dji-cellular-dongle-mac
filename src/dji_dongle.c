@@ -24,6 +24,10 @@
 #define DD_COUNTERS 8u
 #define DD_REASON 40u
 #define DD_WATCH_MISSES 3u /* status gone this many seconds in a row ends watch */
+/* The daemon rewrites the file at least every 60 s; older (or from the future)
+ * means it is not updating. */
+#define DD_STALE_AFTER_S 180
+#define DD_FUTURE_SLACK_S 60
 
 enum { DD_WAITING, DD_CONNECTING, DD_CONNECTED, DD_RETRY_WAIT, DD_REPLUG, DD_PAUSED, DD_STOPPING, DD_BLOCKED };
 static const char *const dd_states[] = {"waiting", "connecting", "connected", "retry-wait", "replug-required",
@@ -176,8 +180,7 @@ static void dd_signal(char *out, size_t size, const struct dd_status *s) {
     if (s->has_rssi) (void)snprintf(rssi, sizeof(rssi), "%d dBm", s->rssi);
     (void)snprintf(out, size, "RSRP %s, RSRQ %s, RSSI %s", rsrp, rsrq, rssi);
 }
-/* The state with what it means right now, e.g. "connected (12m 03s)". */
-static void dd_state(char *out, size_t size, const struct dd_status *s, int64_t now) {
+static void dd_state_base(char *out, size_t size, const struct dd_status *s, int64_t now) {
     char time_text[32];
     const char *name = dd_states[s->state];
     if (s->state == DD_CONNECTED && s->connected_since >= 0) {
@@ -196,6 +199,15 @@ static void dd_state(char *out, size_t size, const struct dd_status *s, int64_t 
     else if (s->state == DD_PAUSED) (void)snprintf(out, size, "%s (dji-dongle resume to connect)", name);
     else if (s->state == DD_BLOCKED) (void)snprintf(out, size, "%s (see /var/log/dji-cellular-dongle-mac.log)", name);
     else (void)snprintf(out, size, "%s", name);
+}
+static int dd_stale(const struct dd_status *s, int64_t now) {
+    return s->updated >= 0 && (now - s->updated > DD_STALE_AFTER_S || s->updated - now > DD_FUTURE_SLACK_S);
+}
+/* The state with what it means right now, e.g. "connected (12m 03s)". */
+static void dd_state(char *out, size_t size, const struct dd_status *s, int64_t now) {
+    char base[128];
+    dd_state_base(base, sizeof(base), s, now);
+    (void)snprintf(out, size, "%s%s", base, dd_stale(s, now) ? " \xe2\x80\x94 status may be stale (daemon not updating)" : "");
 }
 static void dd_print_status(FILE *out, const struct dd_status *s, int64_t now) {
     char line[160], signal_text[96], time_text[32];

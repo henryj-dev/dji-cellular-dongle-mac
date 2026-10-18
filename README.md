@@ -80,8 +80,8 @@ The daemon checks that its child binary and every directory above it are root-ow
 The daemon keeps a small status file and a control socket. The `dji-dongle` command-line tool reads and drives them:
 
 ```sh
-make agent                 # builds build/dji-dongle
-sudo make install-agent    # installs /usr/local/bin/dji-dongle
+make agent                 # builds build/dji-dongle and build/DJI Dongle.app
+sudo make install-agent    # installs /usr/local/bin/dji-dongle and /Applications/DJI Dongle.app
 dji-dongle status          # state, connection time, signal at connect
 dji-dongle watch           # the same plus live RX/TX rate every second (Ctrl+C to quit)
 dji-dongle pause           # end the session and stay off until resume (admin account)
@@ -89,11 +89,23 @@ dji-dongle resume
 dji-dongle reconnect       # end the session and start a fresh one at once
 ```
 
-- `status` and `watch` read `/var/run/dji-cellular-dongle-mac/status.json` (readable by everyone; fixed labels and numbers only, no IP addresses or identifiers). `dji-dongle status --json` prints it as is. The daemon rewrites it on every state change and removes it when it stops cleanly.
+- `status` and `watch` read `/var/run/dji-cellular-dongle-mac/status.json` (readable by everyone; fixed labels and numbers only, no IP addresses or identifiers). `dji-dongle status --json` prints it as is. The daemon rewrites it on every state change, and at least once a minute otherwise, and removes it when it stops cleanly. If the file has not been rewritten for more than 3 minutes (or its time is more than a minute ahead), `status` and `watch` add `— status may be stale (daemon not updating)` to the state: the daemon may have crashed or hung.
 - `pause`, `resume` and `reconnect` go through `/var/run/dji-cellular-dongle-mac/control.sock` (root:admin, 0660, inside the root-only status directory). The daemon also checks the caller: root or a member of the admin group. Others get `need an admin account`.
 - A pause is saved in `/Library/Application Support/dji-cellular-dongle-mac/paused` and survives restarts. It ends a running session the same way a stop does (up to 60 s). If that file or its directory cannot be verified at start, the daemon starts paused (no unexpected data use) and logs `upd=pause-file-blocked paused=yes`. `resume` does not clear a required replug: unplug and plug the dongle in again.
 - Each accepted command is logged as `upd=control command=... uid-class=root|admin`.
-- `sudo make uninstall-agent` removes the tool. `sudo make uninstall` also removes the socket, the status file and a saved pause.
+- `sudo make uninstall-agent` removes the tool and the app. `sudo make uninstall` also removes the socket, the status file and a saved pause.
+
+### Menu bar app
+
+`DJI Dongle.app` (macOS 13 or later) puts the same information in the menu bar. It needs the command-line tools' `swiftc` to build (no Xcode), is signed ad hoc, and has no Dock icon. It is built for the Mac it is built on (Apple silicon or Intel), not as a universal app. Open it once from /Applications.
+
+- The icon shows the state: antenna (connected), crossed-out antenna (waiting, retrying or stopping), antenna in a circle (connecting), pause (paused), warning (replug required, blocked, an unreadable status file, or a status that may be stale), question mark (daemon not installed or not running).
+- The panel shows the state with the connection time or the retry countdown, the **signal at connect** (RSRP, RSRQ, RSSI and a word: very good at RSRP -80 dBm or better, normal down to -100 dBm, weak below), the live ↓/↑ rate of the `ppp*` link, and how the last session ended. A status not rewritten for more than 3 minutes adds "Status may be stale (daemon not updating)"; the buttons stay on and the daemon decides.
+- The signal is measured once, when a session starts, not continuously. A value from hours ago still describes the start of the current session.
+- **Pause**, **Resume** and **Reconnect** need an administrator account, like the command-line tool; other accounts see "This needs an administrator account". Buttons that the current state cannot use are greyed out (Reconnect is off while paused, blocked or waiting for a replug). If the status file cannot be parsed, all three stay on.
+- **Launch at login** uses the system's login items. If macOS asks for approval, allow the app in System Settings › General › Login Items. **Open Log** opens `/var/log/dji-cellular-dongle-mac.log` in Console when your account can read it; the installed log is root-only (0640), so the app usually shows the `sudo tail -f` command instead.
+- The app reads the status file every 2 s and the byte counters of `ppp*` interfaces. It never reads or shows IP addresses, opens no network connections, runs no other programs and needs no privileges.
+- Quit the app before reinstalling or uninstalling it (`sudo make install-agent` / `sudo make uninstall-agent`), and turn off **Launch at login** before uninstalling.
 
 ## Tested so far
 

@@ -345,9 +345,9 @@ build/ppp_lte_upd_test_sanitize: tests/ppp_lte_upd_test.c src/ppp_lte_upd.c | bu
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) $< $(FRAMEWORKS) -o $@
 
 # ---- Optional status/control agent (user side). See README "Status and control". ----
-# AGENT_TARGETS is the hook for further agent pieces (e.g. a menu bar app):
-# append their build targets here and `make agent` builds them too.
-AGENT_TARGETS := build/dji-dongle
+# AGENT_TARGETS is the hook for further agent pieces: append their build
+# targets here and `make agent` builds them too.
+AGENT_TARGETS := build/dji-dongle build/agent-app.stamp
 AGENT_BINDIR ?= /usr/local/bin
 
 agent: $(AGENT_TARGETS)
@@ -360,6 +360,34 @@ build/dji_dongle_test: tests/dji_dongle_test.c src/dji_dongle.c | build
 
 build/dji_dongle_test_sanitize: tests/dji_dongle_test.c src/dji_dongle.c | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) $< -o $@
+
+# Menu bar app "build/DJI Dongle.app" (SwiftUI, swiftc only; no Xcode project).
+# The stamp stands for the bundle because make targets cannot hold spaces.
+# Core/ is pure logic plus the Darwin boundary; the test binary uses it alone.
+SWIFTC := swiftc
+# Built for the Mac it is built on (arm64 or x86_64), not universal.
+APP_ARCH := $(shell uname -m)
+SWIFT_FLAGS := -swift-version 6 -warnings-as-errors -target $(APP_ARCH)-apple-macos13 -O
+APP_CORE_SOURCES := $(wildcard agent/app/Sources/Core/*.swift)
+APP_UI_SOURCES := $(wildcard agent/app/Sources/UI/*.swift)
+APP_STRINGS := agent/app/Resources/en.lproj/Localizable.strings agent/app/Resources/ko.lproj/Localizable.strings
+APP_BUNDLE_ID := io.github.henryj-dev.dji-cellular-dongle-mac.agent
+
+build/agent-app.stamp: $(APP_CORE_SOURCES) $(APP_UI_SOURCES) agent/app/Info.plist $(APP_STRINGS) | build
+	rm -f $@
+	rm -rf 'build/DJI Dongle.app'
+	mkdir -p 'build/DJI Dongle.app/Contents/MacOS' 'build/DJI Dongle.app/Contents/Resources/en.lproj' 'build/DJI Dongle.app/Contents/Resources/ko.lproj'
+	$(SWIFTC) $(SWIFT_FLAGS) -parse-as-library -module-name DJIDongle $(APP_CORE_SOURCES) $(APP_UI_SOURCES) -o 'build/DJI Dongle.app/Contents/MacOS/DJIDongle'
+	plutil -lint agent/app/Info.plist $(APP_STRINGS) > /dev/null
+	plutil -convert binary1 -o 'build/DJI Dongle.app/Contents/Info.plist' agent/app/Info.plist
+	plutil -convert binary1 -o 'build/DJI Dongle.app/Contents/Resources/en.lproj/Localizable.strings' agent/app/Resources/en.lproj/Localizable.strings
+	plutil -convert binary1 -o 'build/DJI Dongle.app/Contents/Resources/ko.lproj/Localizable.strings' agent/app/Resources/ko.lproj/Localizable.strings
+	printf 'APPL????' > 'build/DJI Dongle.app/Contents/PkgInfo'
+	codesign --force --sign - --timestamp=none 'build/DJI Dongle.app'
+	touch $@
+
+build/agent_app_test: $(APP_CORE_SOURCES) agent/app/Tests/main.swift | build
+	$(SWIFTC) $(SWIFT_FLAGS) -module-name AgentAppTest $(APP_CORE_SOURCES) agent/app/Tests/main.swift -o $@
 
 # ---- Install as a launchd daemon (root). See README "Install". ----
 LAUNCHD_LABEL := io.github.henryj-dev.dji-cellular-dongle-mac
@@ -415,16 +443,40 @@ uninstall: require-root
 	-rmdir $(UPD_STATUS_DIR) '$(UPD_PAUSE_DIR)'
 	@echo "dji-cellular-dongle-mac removed. The log /var/log/dji-cellular-dongle-mac.log is kept."
 
-# The CLI only; the daemon (with status and control) comes from `make install`.
+# The CLI and the menu bar app; the daemon (with status and control) comes
+# from `make install`. Never builds, so no root-owned files land in build/.
+# An existing app is replaced only if it is a real directory whose bundle id
+# is ours; the path is a fixed literal under $(DESTDIR). The new copy is made
+# and owned in a temporary name next to it, then moved into place.
 install-agent: require-root
 	@test -f build/dji-dongle || { echo "missing build/dji-dongle: run 'make agent' (without sudo) first"; exit 1; }
+	@test -f build/agent-app.stamp && test -x 'build/DJI Dongle.app/Contents/MacOS/DJIDongle' || { echo "missing build/DJI Dongle.app: run 'make agent' (without sudo) first"; exit 1; }
 	@# An existing bindir is left as is (Homebrew owns /usr/local/bin on Intel Macs).
 	test -d $(DESTDIR)$(AGENT_BINDIR) || install -d $(INSTALL_OWNER) -m 0755 $(DESTDIR)$(AGENT_BINDIR)
 	install -S $(INSTALL_OWNER) -m 0755 build/dji-dongle $(DESTDIR)$(AGENT_BINDIR)/dji-dongle
+	test -d '$(DESTDIR)/Applications' || install -d $(INSTALL_OWNER) -m 0755 '$(DESTDIR)/Applications'
+	@a='$(DESTDIR)/Applications/DJI Dongle.app'; t='$(DESTDIR)/Applications/.DJI Dongle.app.tmp.'$$$$; \
+	if [ -L "$$a" ] || { [ -e "$$a" ] && [ ! -d "$$a" ]; }; then echo "$$a is not a plain app bundle; not touched"; exit 1; fi; \
+	if [ -d "$$a" ]; then \
+	  id=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$$a/Contents/Info.plist" 2> /dev/null); \
+	  [ "$$id" = '$(APP_BUNDLE_ID)' ] || { echo "$$a belongs to another app; not touched"; exit 1; }; fi; \
+	echo "ditto 'build/DJI Dongle.app' '$$t'"; \
+	ditto 'build/DJI Dongle.app' "$$t" && chown -R root:wheel "$$t" && chmod -R go-w "$$t" || { rm -rf "$$t"; exit 1; }; \
+	if [ -d "$$a" ] && [ ! -L "$$a" ]; then echo "rm -rf '$$a'"; rm -rf '$(DESTDIR)/Applications/DJI Dongle.app'; fi; \
+	if [ -e "$$a" ] || [ -L "$$a" ]; then echo "$$a is in the way; not touched"; rm -rf "$$t"; exit 1; fi; \
+	mv -h "$$t" "$$a" || { rm -rf "$$t"; exit 1; }; \
+	if [ -L "$$a" ] || [ ! -d "$$a" ]; then echo "$$a is not the installed bundle"; exit 1; fi
+	@echo "DJI Dongle.app installed in /Applications. Open it once; it lives in the menu bar."
 	@echo "dji-dongle installed. Try: dji-dongle status   Remove: sudo make uninstall-agent"
 
 uninstall-agent: require-root
 	rm -f $(DESTDIR)$(AGENT_BINDIR)/dji-dongle
+	@a='$(DESTDIR)/Applications/DJI Dongle.app'; \
+	if [ -d "$$a" ] && [ ! -L "$$a" ]; then \
+	  id=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$$a/Contents/Info.plist" 2> /dev/null); \
+	  if [ "$$id" = '$(APP_BUNDLE_ID)' ]; then echo "rm -rf '$$a'"; rm -rf '$(DESTDIR)/Applications/DJI Dongle.app'; \
+	  else echo "$$a belongs to another app; not touched"; fi; \
+	elif [ -e "$$a" ] || [ -L "$$a" ]; then echo "$$a is not a plain app bundle; not touched"; fi
 
 clean-daemon:
 	rm -f build/ppp_lte_upd build/helperdir.stamp build/install/dji-cellular-dongle-mac.plist
@@ -433,7 +485,7 @@ FORCE:
 
 # Full offline build, SDK, test, sanitizer and CLI/API checks;
 # no real discovery, wait-reconnect, observation or probe calls.
-verify-offline: all agent ppp-usb-sdk ppp-auth-sdk ppp-lte-sdk build/ppp_lte_once build/ppp_lte_up build/ppp_lte_upd build/ppp_auth_trial build/ppp_local_check test test-sanitize
+verify-offline: all agent build/agent_app_test ppp-usb-sdk ppp-auth-sdk ppp-lte-sdk build/ppp_lte_once build/ppp_lte_up build/ppp_lte_upd build/ppp_auth_trial build/ppp_local_check test test-sanitize
 	mkdir -p $(OFFLINE_LOG_DIR)
 	./build/ppp_lte_once --help > $(OFFLINE_LOG_DIR)/lte-once-help.stdout
 	@./build/ppp_lte_once --lte-once > $(OFFLINE_LOG_DIR)/lte-once-invalid.stdout 2> $(OFFLINE_LOG_DIR)/lte-once-invalid.stderr; rc=$$?; test "$$rc" -eq 2
@@ -548,6 +600,22 @@ verify-offline: all agent ppp-usb-sdk ppp-auth-sdk ppp-lte-sdk build/ppp_lte_onc
 	! grep -nE '\b(unlink|rename|chown|chmod|mkdir)\(' src/ppp_lte_upd.c | grep -v 'mkdir(path, 0700)'
 	! grep -n 'dji-cellular-dongle-mac.sock' src/*.c src/*.h README.md README.ko.md docs/ppp-design.md
 	! grep -nE 'inet_ntop|inet_ntoa|getnameinfo|ifa_netmask|ifa_dstaddr|system\(|popen|execv|execl|posix_spawn|setuid|IOKit|SCDynamic' src/dji_dongle.c
+	./build/agent_app_test
+	codesign --verify --strict 'build/DJI Dongle.app'
+	test "$$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' 'build/DJI Dongle.app/Contents/Info.plist')" = true
+	test "$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' 'build/DJI Dongle.app/Contents/Info.plist')" = '$(APP_BUNDLE_ID)'
+	test "$$(lipo -archs 'build/DJI Dongle.app/Contents/MacOS/DJIDongle')" = '$(APP_ARCH)'
+	! grep -rnE 'Process\(|NSTask|NSAppleScript|OSAScript|URLSession|NWConnection|NWPathMonitor|CFSocket|getaddrinfo|inet_ntop|inet_ntoa|getnameinfo|ifa_netmask|ifa_dstaddr|system\(|popen|posix_spawn|execv|setuid|AuthorizationExecute|SCDynamic|SCPreferences|IOKit' agent/app/Sources agent/app/Tests
+	! grep -rnE 'TODO|FIXME|HACK|placeholder' agent/app
+	@for f in $(APP_STRINGS); do sed -n 's/^"\([^"]*\)" = .*/\1/p' "$$f" | sort > "$(OFFLINE_LOG_DIR)/$$(basename $$(dirname $$f)).keys"; done
+	diff -u $(OFFLINE_LOG_DIR)/en.lproj.keys $(OFFLINE_LOG_DIR)/ko.lproj.keys
+	@# Same format specifiers, in the same order, for every key.
+	@for f in $(APP_STRINGS); do awk -F'" = "' '/^"/ { k = substr($$1, 2); v = $$2; o = ""; \
+	  while (match(v, /%[0-9.]*(ll|l)?[@dsuf%]/)) { o = o substr(v, RSTART, RLENGTH) " "; v = substr(v, RSTART + RLENGTH) } \
+	  print k "\t" o }' "$$f" | sort > "$(OFFLINE_LOG_DIR)/$$(basename $$(dirname $$f)).formats"; done
+	diff -u $(OFFLINE_LOG_DIR)/en.lproj.formats $(OFFLINE_LOG_DIR)/ko.lproj.formats
+	@grep -rhoE 'L\("[a-z.-]+"' agent/app/Sources | sed 's/^L("//; s/"$$//' | sort -u > $(OFFLINE_LOG_DIR)/app-used.keys
+	comm -23 $(OFFLINE_LOG_DIR)/app-used.keys $(OFFLINE_LOG_DIR)/en.lproj.keys | { ! grep .; }
 	test "$$(grep -c 'upd_commands\[\] = {"status", "pause", "resume", "reconnect"}' src/ppp_lte_upd.c)" -eq 1
 	test "$$(grep -c 'SCDynamicStoreRemoveValue' src/ppp_lte_service.c)" -eq 1
 	test "$$(grep -l 'SCDynamicStoreRemoveValue' src/*.c src/*.h)" = "src/ppp_lte_service.c"

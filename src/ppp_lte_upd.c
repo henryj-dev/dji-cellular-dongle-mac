@@ -58,6 +58,7 @@
 #define UPD_PAUSE_NAME "paused"
 #define UPD_STATUS_JSON 640u
 #define UPD_STATUS_RETRY_MS 2000u
+#define UPD_STATUS_HEARTBEAT_MS 60000u /* rewrite at least this often so readers can tell a stuck daemon */
 #define UPD_CONTROL_LINE 64u
 #define UPD_CONTROL_WAIT_MS 200u /* all clients of one slice together */
 #define UPD_CONTROL_CLIENTS 4u
@@ -118,6 +119,7 @@ struct upd_status {
     char last[UPD_STATUS_JSON]; /* last published body, "updated" left out */
     int disabled, write_failed;
     uint64_t retry_due;         /* monotonic ms of the next retry after a failed write */
+    uint64_t written_ms;        /* monotonic ms of the last good write */
 };
 struct upd {
     const struct upd_backend *b;
@@ -219,6 +221,19 @@ static void upd_publish(struct upd *u) {
         return;
     }
     u->s.write_failed = 0;
+    u->s.written_ms = u->b->now(u->b->context);
+}
+/* From every wait slice: retry a failed write, and rewrite an unchanged
+ * status (only "updated" moves) once per heartbeat interval. */
+static void upd_status_tick(struct upd *u) {
+    if (u->s.disabled) return;
+    uint64_t now = u->b->now(u->b->context);
+    if (now == UINT64_MAX) return;
+    if (u->s.write_failed) { if (now >= u->s.retry_due) upd_publish(u); return; }
+    if (u->s.written_ms != UINT64_MAX && now >= u->s.written_ms && now - u->s.written_ms >= UPD_STATUS_HEARTBEAT_MS) {
+        u->s.last[0] = 0; /* forces the write */
+        upd_publish(u);
+    }
 }
 static void upd_state(struct upd *u, int state) { u->s.state = state; upd_publish(u); }
 
@@ -385,10 +400,7 @@ static int upd_wait(struct upd *u, unsigned ms) {
     uint64_t start = u->b->now(u->b->context);
     while (!*u->stop) {
         upd_control(u);
-        if (u->s.write_failed) {
-            uint64_t now = u->b->now(u->b->context);
-            if (now != UINT64_MAX && now >= u->s.retry_due) upd_publish(u);
-        }
+        upd_status_tick(u);
         if (u->wake) { u->wake = 0; return 1; }
         uint64_t now = u->b->now(u->b->context);
         /* A failed clock still waits one slice: never a busy loop. */
@@ -429,6 +441,7 @@ static void upd_child(struct upd *u, const char *mode, int forward, struct upd_c
     k->started_ms = started_ms;
     for (;;) {
         upd_control(u);
+        upd_status_tick(u);
         /* Never signal a pid already reaped: it may belong to another process now.
          * A pause or reconnect ends the session the same way; the daemon stays. */
         if (forward && (*u->stop || u->end_session) && !k->forwarded && !k->ended) {

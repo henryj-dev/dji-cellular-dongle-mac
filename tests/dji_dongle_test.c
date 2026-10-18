@@ -73,6 +73,7 @@ static void reset(int number) { memset(&f, 0, sizeof(f)); scenario = number; f.n
     "\"connected_since\":1700000077,\"retry_at\":null,\"signal\":{\"quality\":\"ok\",\"rssi_dbm\":-73,\"rsrp_dbm\":-99," \
     "\"rsrq_db\":-10.0,\"measured_at\":1700000001},\"last_end\":{\"result\":\"ended\",\"reason\":\"usb-error\"," \
     "\"at\":1700000000},\"updated\":1700000077}\n"
+static int starts(const char *text, const char *prefix) { return !strncmp(text, prefix, strlen(prefix)); }
 static int parses(const char *text) { struct dd_status s; return !dd_parse(text, strlen(text), &s); }
 /* CONNECTED with one fragment replaced. */
 static int parses_with(const char *from, const char *to) {
@@ -204,15 +205,29 @@ int main(void) {
         with_nul[40] = 0;
         CHECK(dd_parse(with_nul, sizeof(with_nul) - 1, &s) == -1);
     }
-    /* 3: human status output. */
-    reset(3); f.status = CONNECTED; f.now = 1700000077 + 723;
+    /* 3: human status output (the daemon rewrote the file 30 s ago). */
+    static char fresh[] = CONNECTED;
+    memcpy(strstr(fresh, "\"updated\":1700000077") + 10, "1700000770", 10);
+    reset(3); f.status = fresh; f.now = 1700000077 + 723;
     CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 0);
     CHECK(!strcmp(out_text, "state: connected (12m 03s)\n"
                             "signal at connect: RSRP -99 dBm, RSRQ -10.0 dB, RSSI -73 dBm\n"
                             "paused: no\n"
                             "last end: ended (usb-error), 13m 20s ago\n") && !err_text[0]);
     /* --json prints the daemon's line as is. */
+    f.status = CONNECTED;
     CHECK(run(3, (const char *[]){"dji-dongle", "status", "--json", NULL}) == 0 && !strcmp(out_text, CONNECTED));
+    /* Not rewritten for more than 180 s (heartbeat is 60 s), or more than
+     * 60 s in the future: the state line says it may be stale. */
+    f.now = 1700000077 + 181;
+    CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 0 &&
+          starts(out_text, "state: connected (3m 01s) \xe2\x80\x94 status may be stale (daemon not updating)\n"));
+    f.now = 1700000077 + 180;
+    CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 0 && starts(out_text, "state: connected (3m 00s)\n"));
+    f.now = 1700000077 - 61;
+    CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 0 && strstr(out_text, "status may be stale"));
+    f.now = 1700000077 - 60;
+    CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 0 && !strstr(out_text, "stale"));
     /* Other states read as what they mean now. */
     reset(3); f.now = 1700000010;
     f.status = "{\"version\":1,\"state\":\"retry-wait\",\"devices\":1,\"paused\":false,\"session_started\":null,"
@@ -230,6 +245,13 @@ int main(void) {
         "\"updated\":1700000008}";
     CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 0);
     CHECK(!strcmp(out_text, "state: waiting (no dongle)\nsignal at connect: not measured yet\npaused: yes\n"));
+    /* An unknown write time (null) is never called stale. */
+    f.status = "{\"version\":1,\"state\":\"paused\",\"devices\":1,\"paused\":true,\"session_started\":null,"
+        "\"connected_since\":null,\"retry_at\":null,\"signal\":{\"quality\":null,\"rssi_dbm\":null,\"rsrp_dbm\":null,"
+        "\"rsrq_db\":null,\"measured_at\":null},\"last_end\":{\"result\":\"none\",\"reason\":null,\"at\":null},"
+        "\"updated\":null}";
+    f.now = 1800000000;
+    CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 0 && !strstr(out_text, "stale"));
     /* 4: no file, an unreadable or invalid one. */
     reset(4); f.status_error = ENOENT;
     CHECK(run(2, (const char *[]){"dji-dongle", "status", NULL}) == 1 && !out_text[0] &&
@@ -327,6 +349,11 @@ int main(void) {
     static const struct dd_counter jump_a[] = {{"ppp0", 100, 100}}, jump_b[] = {{"ppp0", 100 + 0x80000000u, 200}};
     f.samples[0] = jump_a; f.sample_counts[0] = 1; f.samples[1] = jump_b; f.sample_counts[1] = 1;
     CHECK(run(2, (const char *[]){"dji-dongle", "watch", NULL}) == 0 && strstr(out_text, "| RX - TX -\n"));
+    /* watch shows the stale marker too. */
+    reset(7); f.status = CONNECTED; f.now = 1700000077 + 600; f.stop_after = 2;
+    f.samples[0] = d; f.sample_counts[0] = 1; f.samples[1] = d; f.sample_counts[1] = 1;
+    CHECK(run(2, (const char *[]){"dji-dongle", "watch", NULL}) == 0 &&
+          starts(out_text, "connected (10m 01s) \xe2\x80\x94 status may be stale (daemon not updating) | "));
     /* 8: formatting edges. */
     reset(8);
     {

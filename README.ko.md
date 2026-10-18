@@ -83,20 +83,32 @@ sudo make uninstall
 데몬은 작은 상태 파일과 제어 소켓을 둡니다. 명령줄 도구 `dji-dongle`로 상태를 보고 제어합니다.
 
 ```sh
-make agent                 # build/dji-dongle 빌드
-sudo make install-agent    # /usr/local/bin/dji-dongle 설치
-dji-dongle status          # 상태, 연결 시간, 연결 때 신호
+make agent                 # build/dji-dongle과 build/DJI Dongle.app 빌드
+sudo make install-agent    # /usr/local/bin/dji-dongle과 /Applications/DJI Dongle.app 설치
+dji-dongle status          # 상태, 연결 시간, 연결할 때 신호
 dji-dongle watch           # 위 내용과 실시간 RX/TX 속도를 1초마다(Ctrl+C로 끝)
 dji-dongle pause           # 세션을 끝내고 resume 전까지 연결하지 않음(관리자 계정)
 dji-dongle resume
 dji-dongle reconnect       # 세션을 끝내고 바로 새로 연결
 ```
 
-- `status`와 `watch`는 `/var/run/dji-cellular-dongle-mac/status.json`을 읽습니다. 누구나 읽을 수 있고, 고정 라벨과 숫자만 들어 있습니다(IP 주소·식별값 없음). `dji-dongle status --json`은 이 파일을 그대로 출력합니다. 데몬은 상태가 바뀔 때마다 파일을 다시 쓰고, 정상 종료할 때 지웁니다.
+- `status`와 `watch`는 `/var/run/dji-cellular-dongle-mac/status.json`을 읽습니다. 누구나 읽을 수 있고, 고정 라벨과 숫자만 들어 있습니다(IP 주소·식별값 없음). `dji-dongle status --json`은 이 파일을 그대로 출력합니다. 데몬은 상태가 바뀔 때마다, 바뀌지 않아도 1분에 한 번 이상 파일을 다시 쓰고, 정상 종료할 때 지웁니다. 3분 넘게 다시 쓰이지 않았거나 파일의 시각이 1분 넘게 앞서 있으면 `status`와 `watch`는 상태 뒤에 `— status may be stale (daemon not updating)`을 붙입니다. 데몬이 죽었거나 멈췄을 수 있다는 뜻입니다.
 - `pause`, `resume`, `reconnect`는 root 전용 상태 디렉터리 안의 `/var/run/dji-cellular-dongle-mac/control.sock`(root:admin, 0660)으로 보냅니다. 데몬은 호출한 사용자도 확인합니다. root이거나 admin 그룹 구성원이어야 하고, 아니면 `need an admin account`가 나옵니다.
 - pause는 `/Library/Application Support/dji-cellular-dongle-mac/paused`에 저장돼 재시작 뒤에도 유지됩니다. 실행 중인 세션은 정지 요청과 같은 방법으로 끝냅니다(최대 60초). 시작할 때 이 파일이나 디렉터리를 검증하지 못하면 예상치 못한 데이터 사용을 막으려고 pause 상태로 시작하고 `upd=pause-file-blocked paused=yes`를 남깁니다. `resume`은 필요한 재연결(replug)을 없애지 않으니, 동글을 뺐다가 다시 꽂아야 합니다.
 - 받아들인 명령은 로그에 `upd=control command=... uid-class=root|admin`으로 남습니다.
-- `sudo make uninstall-agent`로 도구를 지웁니다. `sudo make uninstall`은 소켓, 상태 파일, 저장된 pause도 지웁니다.
+- `sudo make uninstall-agent`로 도구와 앱을 지웁니다. `sudo make uninstall`은 소켓, 상태 파일, 저장된 pause도 지웁니다.
+
+### 메뉴 막대 앱
+
+`DJI Dongle.app`(macOS 13 이상)은 같은 정보를 메뉴 막대에 보여 줍니다. 빌드에는 명령줄 도구의 `swiftc`만 있으면 되고(Xcode 불필요), ad-hoc 서명이며 Dock 아이콘이 없습니다. universal 앱이 아니라 빌드한 맥의 아키텍처(Apple silicon 또는 Intel)용으로 만들어집니다. /Applications에서 한 번 열면 됩니다.
+
+- 아이콘이 상태를 나타냅니다: 안테나(연결됨), 빗금 친 안테나(대기·재시도 대기·멈추는 중), 원 안의 안테나(연결 중), 일시정지(paused), 경고(다시 꽂기 필요·막힘·상태 파일 읽기 실패·오래됐을 수 있는 상태), 물음표(데몬 미설치·미실행).
+- 패널에는 상태와 연결 시간 또는 다음 시도까지 남은 시간, **연결할 때 신호**(RSRP, RSRQ, RSSI와 한 단어 평가: RSRP -80 dBm 이상 매우 좋음, -100 dBm까지 보통, 그 아래 약함), `ppp*` 링크의 실시간 ↓/↑ 속도, 마지막 세션이 끝난 이유가 나옵니다. 상태 파일이 3분 넘게 다시 쓰이지 않으면 "상태가 오래됐을 수 있어요(데몬이 갱신하지 않음)"가 붙습니다. 이때도 버튼은 켜 두고 판단은 데몬에 맡깁니다.
+- 신호는 세션을 시작할 때 한 번만 잽니다. 계속 재지 않으므로, 몇 시간 전 값이어도 지금 세션이 시작될 때의 신호입니다.
+- **일시정지**, **다시 시작**, **다시 연결**은 명령줄 도구처럼 관리자 계정이 필요합니다. 다른 계정에서는 "관리자 계정이 필요해요"가 나옵니다. 지금 상태에서 쓸 수 없는 버튼은 흐리게 보입니다(다시 연결은 일시정지·막힘·다시 꽂기 필요일 때 꺼짐). 상태 파일 형식을 해석하지 못하면 세 버튼을 모두 켜 둡니다.
+- **로그인할 때 실행**은 시스템 로그인 항목을 씁니다. macOS가 승인을 요구하면 시스템 설정 › 일반 › 로그인 항목에서 허용하세요. **로그 열기**는 지금 계정이 읽을 수 있으면 `/var/log/dji-cellular-dongle-mac.log`를 콘솔로 엽니다. 설치된 로그는 root 전용(0640)이라 보통은 대신 `sudo tail -f` 명령을 보여 줍니다.
+- 앱은 2초마다 상태 파일과 `ppp*` 인터페이스의 바이트 수만 읽습니다. IP 주소를 읽거나 보여 주지 않고, 네트워크 연결을 열지 않으며, 다른 프로그램을 실행하지 않고, 권한도 필요 없습니다.
+- 다시 설치하거나 지우기 전에(`sudo make install-agent` / `sudo make uninstall-agent`) 앱을 끝내 주세요. 지우기 전에는 **로그인할 때 실행**도 꺼 주세요.
 
 ## 지금까지 확인한 것
 

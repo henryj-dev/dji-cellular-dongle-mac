@@ -1,0 +1,72 @@
+/* 메뉴 막대 앱, 한국어. 키는 en.lproj와 같다. */
+"app.accessibility" = "DJI 동글 상태";
+
+"duration.seconds" = "%lld초";
+"duration.minutes" = "%lld분 %02lld초";
+"duration.hours" = "%lld시간 %02lld분";
+"time.ago" = "%@ 전";
+
+"state.connected" = "연결됨";
+"state.connected.for" = "연결됨 · %@";
+"state.connecting" = "연결 중";
+"state.connecting.for" = "연결 중 · %@";
+"state.retry" = "다시 시도 대기 중";
+"state.retry.in" = "%@ 뒤 다시 시도";
+"state.waiting.none" = "꽂힌 동글 없음";
+"state.waiting.many" = "동글이 여러 개 꽂혀 있음(하나만 지원)";
+"state.waiting.unchecked" = "대기 중(동글 확인 전)";
+"state.replug" = "동글을 뺐다가 다시 꽂아야 함";
+"state.paused" = "일시정지됨";
+"state.stopping" = "멈추는 중";
+"state.blocked" = "막힘: 로그를 확인해 주세요";
+"state.stale" = "상태가 오래됐을 수 있어요(데몬이 갱신하지 않음)";
+
+"label.signal-at-connect" = "연결할 때 신호:";
+"label.live-rate" = "실시간 속도:";
+"label.last-end" = "마지막 종료:";
+
+"signal.very-good" = "매우 좋음";
+"signal.normal" = "보통";
+"signal.weak" = "약함";
+"signal.unknown" = "모름";
+"signal.not-measured" = "아직 재지 않음";
+
+"end.stopped" = "정지";
+"end.ended" = "끝남";
+"end.cleanup-required" = "정리 필요";
+"end.blocked" = "막힘";
+
+"problem.not-running" = "데몬이 설치되지 않았거나 실행 중이 아니에요";
+"problem.unreadable" = "상태 파일을 읽을 수 없어요";
+"problem.invalid" = "상태 파일 형식이 올바르지 않아요";
+
+"button.pause" = "일시정지";
+"button.resume" = "다시 시작";
+"button.reconnect" = "다시 연결";
+
+"reply.paused" = "일시정지했어요";
+"reply.pausing" = "일시정지 중: 지금 세션을 끝내고 있어요(최대 60초)";
+"reply.already-paused" = "이미 일시정지 상태예요";
+"reply.paused-not-saved" = "일시정지했어요(저장 안 됨: 데몬이 다시 시작하면 풀려요)";
+"reply.resumed" = "다시 시작했어요";
+"reply.already-running" = "이미 실행 중이에요";
+"reply.resumed-not-saved" = "다시 시작했어요(저장 안 됨: 데몬이 다시 시작하면 다시 멈춰요)";
+"reply.reconnecting" = "다시 연결하는 중이에요";
+"reply.need-admin" = "관리자 계정이 필요해요";
+"reply.refused-paused" = "일시정지 상태예요. 먼저 다시 시작해 주세요";
+"reply.refused-replug" = "먼저 동글을 뺐다가 다시 꽂아 주세요";
+"reply.refused-no-device" = "꽂힌 동글이 없어요";
+"reply.refused-stopping" = "데몬이 멈추는 중이에요";
+"reply.no-reply" = "데몬이 응답하지 않아요";
+"reply.socket-error" = "제어 소켓 오류";
+"reply.unexpected" = "데몬이 예상하지 못한 응답을 보냈어요";
+
+"login.toggle" = "로그인할 때 실행";
+"login.requires-approval" = "시스템 설정 › 일반 › 로그인 항목에서 DJI Dongle을 허용해 주세요.";
+"login.open-settings" = "로그인 항목 열기";
+"login.error" = "로그인 항목을 바꾸지 못했어요. 앱을 /Applications로 옮긴 뒤 다시 해 주세요.";
+
+"log.missing" = "아직 로그 파일이 없어요";
+"log.root-only" = "로그는 root만 읽을 수 있어요. 터미널에서: sudo tail -f /var/log/dji-cellular-dongle-mac.log";
+"menu.open-log" = "로그 열기";
+"menu.quit" = "DJI Dongle 끝내기";

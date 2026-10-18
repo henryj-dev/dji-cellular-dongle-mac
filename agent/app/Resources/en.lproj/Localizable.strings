@@ -1,0 +1,72 @@
+/* Menu bar app, English (base). Keys are shared with ko.lproj. */
+"app.accessibility" = "DJI Dongle status";
+
+"duration.seconds" = "%llds";
+"duration.minutes" = "%lldm %02llds";
+"duration.hours" = "%lldh %02lldm";
+"time.ago" = "%@ ago";
+
+"state.connected" = "Connected";
+"state.connected.for" = "Connected · %@";
+"state.connecting" = "Connecting";
+"state.connecting.for" = "Connecting · %@";
+"state.retry" = "Waiting to retry";
+"state.retry.in" = "Next try in %@";
+"state.waiting.none" = "No dongle plugged in";
+"state.waiting.many" = "More than one dongle; only one is supported";
+"state.waiting.unchecked" = "Waiting (dongle not checked yet)";
+"state.replug" = "Unplug the dongle and plug it in again";
+"state.paused" = "Paused";
+"state.stopping" = "Stopping";
+"state.blocked" = "Blocked: see the log";
+"state.stale" = "Status may be stale (daemon not updating)";
+
+"label.signal-at-connect" = "Signal at connect:";
+"label.live-rate" = "Live rate:";
+"label.last-end" = "Last end:";
+
+"signal.very-good" = "Very good";
+"signal.normal" = "Normal";
+"signal.weak" = "Weak";
+"signal.unknown" = "unknown";
+"signal.not-measured" = "Not measured yet";
+
+"end.stopped" = "stopped";
+"end.ended" = "ended";
+"end.cleanup-required" = "cleanup required";
+"end.blocked" = "blocked";
+
+"problem.not-running" = "Daemon not installed or not running";
+"problem.unreadable" = "Cannot read the status file";
+"problem.invalid" = "The status file is not valid";
+
+"button.pause" = "Pause";
+"button.resume" = "Resume";
+"button.reconnect" = "Reconnect";
+
+"reply.paused" = "Paused";
+"reply.pausing" = "Pausing: the current session is ending (up to 60 s)";
+"reply.already-paused" = "Already paused";
+"reply.paused-not-saved" = "Paused (not saved: a daemon restart resumes)";
+"reply.resumed" = "Resumed";
+"reply.already-running" = "Already running";
+"reply.resumed-not-saved" = "Resumed (not saved: a daemon restart pauses again)";
+"reply.reconnecting" = "Reconnecting";
+"reply.need-admin" = "This needs an administrator account";
+"reply.refused-paused" = "Paused: resume first";
+"reply.refused-replug" = "Unplug the dongle and plug it in again first";
+"reply.refused-no-device" = "No dongle plugged in";
+"reply.refused-stopping" = "The daemon is stopping";
+"reply.no-reply" = "No reply from the daemon";
+"reply.socket-error" = "Control socket error";
+"reply.unexpected" = "Unexpected reply from the daemon";
+
+"login.toggle" = "Launch at login";
+"login.requires-approval" = "Allow DJI Dongle in System Settings › General › Login Items.";
+"login.open-settings" = "Open Login Items";
+"login.error" = "Could not change the login item. Move the app to /Applications and try again.";
+
+"log.missing" = "No log file yet";
+"log.root-only" = "Only root can read the log. In Terminal: sudo tail -f /var/log/dji-cellular-dongle-mac.log";
+"menu.open-log" = "Open Log";
+"menu.quit" = "Quit DJI Dongle";
