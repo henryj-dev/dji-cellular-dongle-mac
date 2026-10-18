@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.henryj-dev.dji-cellular-dongle-mac</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HELPERDIR__/ppp_lte_upd</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<!-- Stop budget: up to 60 s for the session, 5 s output drain, one cleanup run (30 s). -->
+	<key>ExitTimeOut</key>
+	<integer>180</integer>
+	<key>StandardOutPath</key>
+	<string>/var/log/dji-cellular-dongle-mac.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/dji-cellular-dongle-mac.log</string>
+</dict>
+</plist>
