@@ -87,8 +87,9 @@ sudo make uninstall
 - 다시 꽂기: 자동 재연결
 - `adb` 서버가 켜져 있어도 연결 유지(`children-check tolerated creator=adb`)
 - `sudo make uninstall`: 데몬과 파일 제거
-- `networkQuality` 실측: **다운로드 약 1.6 Mbps, 업로드 약 8 Mbps, 유휴 지연 약 270ms**
-  - 가장 유력한 병목은 이 도구의 USB 중계 루프입니다(USB 읽기를 한 번에 하나만 걸어 둠, `src/ppp_usb.c`). 같은 SIM으로 다른 기기와 비교 측정은 아직 하지 않았습니다. 다음 작업으로 루프 개선을 계획하고 있습니다.
+- `networkQuality` 실측: **다운로드 약 1.9 Mbps, 업로드 약 11.6 Mbps, 유휴 지연 약 120ms** (첫 공개 때 1.6 / 8 Mbps, 270ms)
+  - 진단 결과 병목은 모뎀이 아니라 이 도구의 USB 중계 루프입니다. USB 읽기를 한 번에 하나만 걸고, 루프 한 바퀴에 약 4ms가 걸립니다.
+  - 다음 작업으로 USB 읽기 여러 개 동시 대기와 이벤트 기반 대기를 계획하고 있습니다(`docs/ppp-design.md`).
 - 시험하지 않은 것: 잠자기·깨우기, 몇 시간 이상 긴 세션, 다른 macOS 버전이나 다른 맥
 
 ## 위험

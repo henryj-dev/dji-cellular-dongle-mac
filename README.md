@@ -84,7 +84,7 @@ On the test Mac (Apple Silicon, macOS 26.6) with the daemon installed:
 - Plug in again: reconnects automatically.
 - With the `adb` server running: stays connected (`children-check tolerated creator=adb`).
 - `sudo make uninstall`: removes the daemon and files.
-- Measured with `networkQuality`: **download about 1.6 Mbps, upload about 8 Mbps, idle latency about 270 ms**. The most likely bottleneck is this tool's USB relay loop (only one USB read in flight at a time, see `src/ppp_usb.c`); a comparison on another device with the same SIM has not been done yet. Improving the loop is planned next.
+- Measured with `networkQuality`: **download about 1.9 Mbps, upload about 11.6 Mbps, idle latency about 120 ms** (first release: 1.6 / 8 Mbps, 270 ms). Diagnostics show the bottleneck is this tool's USB relay loop, not the modem: only one USB read is in flight at a time and each relay loop takes about 4 ms. Multiple in-flight reads and event-driven waiting are planned next (see `docs/ppp-design.md`).
 - Not tested: sleep/wake, long sessions (hours), other macOS versions or Macs.
 
 ## Risks

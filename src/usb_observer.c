@@ -375,6 +375,7 @@ struct usb_session {
     struct usb_context context;
     struct descriptor_config config;
     int opened, closed, close_status;
+    uint8_t validated_out; /* OUT pipe proved by the last successful validation */
 };
 
 void usb_session_release(struct usb_session *s) {
@@ -399,12 +400,15 @@ IOUSBInterfaceInterface182 **usb_session_interface(struct usb_session *s) {
 }
 int usb_session_validate(struct usb_session *s, uint8_t *out, uint8_t *in) {
     if (!s || !out || !in || !s->opened || s->closed) return DJI_SYSTEM_ERROR;
-    return probe_validate(&s->context, AT_PROBE_INTERFACE, 1, out, in);
+    int status = probe_validate(&s->context, AT_PROBE_INTERFACE, 1, out, in);
+    s->validated_out = status == DJI_OK ? *out : 0;
+    return status;
 }
 int usb_session_write_validated(struct usb_session *s, uint8_t out, const uint8_t *data, uint32_t size,
                                 uint32_t timeout) {
-    if (!s || !data || !size || size > 4096 || !timeout || !out || !s->opened || s->closed)
-        return DJI_SYSTEM_ERROR;
+    /* Only the pipe the last successful validation proved on this session. */
+    if (!s || !data || !size || size > 4096 || !timeout || !out || !s->opened || s->closed ||
+        out != s->validated_out) return DJI_SYSTEM_ERROR;
     uint8_t copy[4096];
     memcpy(copy, data, size);
     return sdk_write(&s->context, out, copy, size, timeout);
@@ -413,11 +417,10 @@ int usb_session_write(struct usb_session *s, const uint8_t *data, uint32_t size,
     /* The adapter separately checks the bound supervisor gate; this policy does
      * not weaken the source-pointer allowlist of write_bulk. */
     if (!s || !data || !size || size > 4096 || !timeout) return DJI_SYSTEM_ERROR;
-    uint8_t out = 0, in = 0, copy[4096];
+    uint8_t out = 0, in = 0;
     int status = usb_session_validate(s, &out, &in);
     if (status != DJI_OK) return status;
-    memcpy(copy, data, size);
-    return sdk_write(&s->context, out, copy, size, timeout);
+    return usb_session_write_validated(s, out, data, size, timeout);
 }
 int usb_session_acquire(io_service_t service, IOUSBDeviceInterface **device,
                         uint64_t registry_id, const struct descriptor_config *config,

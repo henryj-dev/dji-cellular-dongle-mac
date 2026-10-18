@@ -100,7 +100,9 @@ static uint64_t usb_now(void *context) {
     if (clock_gettime(CLOCK_MONOTONIC, &t)) return UINT64_MAX;
     return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
 }
-static uint64_t diag_us(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000; }
+/* Keeps counting across system sleep, so a cached validation never outlives
+ * its window by a sleep. */
+static uint64_t diag_us(void) { return clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1000; }
 /* Full registry validation costs about 1.4 ms on the test Mac; doing it for
  * every PPP transfer capped the relay near 165 loops/s. Reuse a success for
  * validate_interval_us; any failure forces the next call to validate again. */
@@ -112,7 +114,7 @@ static int adapter_validate(struct ppp_usb *a, uint8_t *out, uint8_t *in) {
     }
     int status = usb_session_validate(a->session, out, in);
     uint64_t done = diag_us();
-    if (a->supervisor) a->supervisor->usb_validate_us += done - now;
+    if (a->supervisor && done >= now) a->supervisor->usb_validate_us += done - now;
     if (status == DJI_OK) { a->validated_us = done ? done : 1; a->valid_out = *out; a->valid_in = *in; }
     else a->validated_us = 0;
     return status;
@@ -171,7 +173,8 @@ static struct offline_io usb_write(void *context, const unsigned char *data, siz
     uint8_t out = 0, in = 0;
     int status = adapter_validate(a, &out, &in);
     if (status == DJI_OK) status = usb_session_write_validated(a->session, out, data, (uint32_t)length, a->timeout);
-    if (a->supervisor) a->supervisor->usb_write_us += diag_us() - started;
+    uint64_t finished = diag_us();
+    if (a->supervisor && finished >= started) a->supervisor->usb_write_us += finished - started;
     if (status != DJI_OK) {
         remember_error(a, kIOReturnError, write_kind(status), PPP_USB_SITE_WRITE);
         return (struct offline_io){OFFLINE_IO_ERROR, 0};
@@ -204,6 +207,7 @@ static int usb_quiesce(void *context) {
     if (!owner(a) || a->pumping || a->closed) return -1;
     if (!a->stopping) {
         a->stopping = 1;
+        a->validated_us = 0; /* no transfer may reuse a validation after stop */
         if (a->pending) {
             IOUSBInterfaceInterface182 **interface = usb_session_interface(a->session);
             /* Validated pipe captured at acquisition; cancellation must remain

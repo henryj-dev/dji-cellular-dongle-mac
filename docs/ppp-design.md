@@ -460,3 +460,10 @@ main 선종료 반례는 `holder-exit` 한 종류뿐입니다. holder 준비 han
 - 정리 시점: 시작 전(observer baseline 전), pppd reap 직후(CLOSED 전), 종료 직전(reap되었거나 시작되지 않은 경우), `--cleanup`. `ownership_lost`처럼 pppd가 살아 있을 수 있으면 지우지 않고 `next-run-cleanup=required`로 남깁니다.
 - 가드: `verify-offline`은 `SCDynamicStoreRemoveValue`가 `ppp_lte_service.c`의 상수 키 호출 한 곳뿐인지, SC 쓰기·SCPreferences·SCNetworkSet API가 src에 없는지, `defaultroute|usepeerdns` 단어가 `ppp_launch.c`에만 있는지, `PPP_LAUNCH_MODE_UP`이 session과 up 실행기에만 있는지 확인합니다.
 - 미확인: configd가 Setup: 항목 없는 State 전용 서비스를 primary로 올리는지, DNS 채택, IPv6 차단, 설치본 pppd와 공개 pin의 동일성, 모뎀의 LCP echo 응답, 처리량, 슬립·깨우기 뒤 동작, 원격 LCP·PDP 종료, 후손 프로세스.
+
+## PPP 중계 처리량 (2026-10-18)
+
+- 첫 데몬 실기에서 하향 1.6 / 상향 8 Mbps가 나왔습니다. 진단 라벨(`usb-in-bytes`, `usb-in-reads`, `usb-in-empty-polls`, `usb-validate-ms`, `usb-write-ms`, `loop-slices`)로 원인을 나눴습니다.
+- 대기: 바이트가 움직이면 다음 100 slice 동안 1ms 대기를 유지합니다(이전에는 1ms·10ms를 번갈아 써서 읽기 경로가 쉬었습니다).
+- 검사 재사용: 전체 레지스트리 검사가 회당 약 1.4ms였고 PPP 읽기·쓰기마다 돌아 루프가 초당 약 165회에 묶였습니다. 이제 PPP 읽기 제출과 쓰기는 성공한 검사를 250ms 동안 재사용합니다(`adapter_validate`, `CLOCK_MONOTONIC_RAW`). 검사 없는 쓰기(`usb_session_write_validated`)는 세션이 마지막으로 검증한 OUT 파이프만 받습니다. CGDATA 연결 명령과 AT 조회는 매번 검사합니다. 받아들인 위험: 창 안에서 생긴 다른 user client는 최대 250ms 늦게 보입니다. 그동안에도 독점 `USBInterfaceOpen` 때문에 그 client는 송수신하지 못하고, 분리·재열거는 열린 핸들의 오류로 바로 드러납니다. 정지(`quiesce`)할 때 캐시를 지웁니다.
+- 결과: 하향 1.9 / 상향 11.6 Mbps, 유휴 지연 약 120ms, 루프 초당 약 258회. 남은 병목은 USB IN 읽기가 한 번에 하나라 "제출 → 빈 확인 → 수거"에 약 3 slice가 드는 구조와 slice당 약 3.9ms입니다. 다음 단계는 IN 읽기 여러 개 동시 대기와 이벤트 기반 대기입니다.

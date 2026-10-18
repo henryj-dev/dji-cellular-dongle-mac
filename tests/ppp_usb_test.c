@@ -518,10 +518,41 @@ static void validate_interval_test(void) {
     CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_AGAIN && sdk.child_scans == before + 1);
     queue_result((const unsigned char *)"x", 1, 0, 1);
     CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_OK);
-    /* A failed validation clears the cache and the read fails closed. */
-    live->validated_us = 0; sdk.adb_child = 2; sdk.plugin_created = 1;
+    /* Accepted window risk: a foreign client inside the window is not seen
+     * (the exclusive open still guards transfers); once expired it is. */
+    live->validate_interval_us = 250000; live->validated_us = 0;
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_AGAIN && live->validated_us);
+    queue_result((const unsigned char *)"x", 1, 0, 1);
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_OK);
+    sdk.adb_child = 2;
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_AGAIN);
+    queue_result((const unsigned char *)"x", 1, 0, 1);
+    CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_OK);
+    /* Expired and failing: the read fails closed and the cache is cleared. */
+    live->validated_us = 1;
     CHECK(peer.read(peer.context, data, sizeof(data)).code == OFFLINE_IO_ERROR && !live->validated_us);
     sdk.adb_child = 0;
+    dispose(&peer);
+}
+/* PPP writes share the read's cached validation and send on the proved pipe;
+ * the unchecked writer refuses any other pipe or a closed session. */
+static void cached_write_test(void) {
+    reset(); struct ppp_supervisor supervisor = {0};
+    struct ppp_peer peer = acquire(&supervisor);
+    supervisor.ready = supervisor.connected = 1; supervisor.stream.ready = 1;
+    supervisor.phase = PPP_SESSION; supervisor.peer.context = live;
+    live->validate_interval_us = 250000; live->validated_us = 0;
+    unsigned scans = sdk.child_scans, writes = sdk.writes;
+    for (unsigned i = 0; i < 4; i++) {
+        struct offline_io wrote = peer.write(peer.context, (const unsigned char *)"abcd", 4);
+        CHECK(wrote.code == OFFLINE_IO_OK && wrote.count == 4);
+    }
+    CHECK(sdk.child_scans == scans + 1 && sdk.writes == writes + 4 && live->valid_out == 3);
+    CHECK(usb_session_write_validated(live->session, 2, (const uint8_t *)"x", 1, 100) == DJI_SYSTEM_ERROR);
+    CHECK(usb_session_write_validated(live->session, 0, (const uint8_t *)"x", 1, 100) == DJI_SYSTEM_ERROR);
+    CHECK(usb_session_write_validated(live->session, 3, (const uint8_t *)"x", 4097, 100) == DJI_SYSTEM_ERROR);
+    CHECK(sdk.writes == writes + 4);
+    supervisor.ready = supervisor.connected = 0; supervisor.stream.ready = 0;
     dispose(&peer);
 }
 static void acquisition_test(void) {
@@ -1990,7 +2021,7 @@ int main(int argc, char **argv) {
     session_error_wait_test(argv[1]); session_usb_label_test(argv[1]); session_owner_test(argv[1]);
     runner_inputs_test(argv[1]); runner_install_restore_test(argv[1]);
     runner_wait_signal_test(argv[1]); runner_running_wait_test(argv[1]);
-    children_label_test(); adb_child_test(); validate_interval_test(); acquisition_test(); completion_test(); usb_error_label_test(); cancellation_test(); wrong_owner_test(); probe_pointer_test();
+    children_label_test(); adb_child_test(); validate_interval_test(); cached_write_test(); acquisition_test(); completion_test(); usb_error_label_test(); cancellation_test(); wrong_owner_test(); probe_pointer_test();
     dispose_acquisition_test(); dispose_start_failure_test(argv[1]); dispose_completion_test();
     dispose_rejection_test(); dispose_close_test(); asynchronous_exec_failure_test();
     connect_hook_test(); observed_usb_test(argv[1], 0); observed_usb_test(argv[1], 1);
